@@ -16,7 +16,6 @@ const pool = new Pool({
 // === Middleware ===
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname)));
 
 // === Crear tablas si no existen ===
 (async () => {
@@ -30,6 +29,7 @@ app.use(express.static(path.join(__dirname)));
         tipo TEXT DEFAULT 'Inversor'
       );
     `);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS inversiones (
         id SERIAL PRIMARY KEY,
@@ -40,11 +40,24 @@ app.use(express.static(path.join(__dirname)));
         fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS comentarios (
+        id SERIAL PRIMARY KEY,
+        propiedad TEXT NOT NULL,
+        usuario TEXT NOT NULL REFERENCES usuarios(usuario) ON DELETE CASCADE,
+        contenido TEXT NOT NULL,
+        fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        estado TEXT DEFAULT 'pendiente'
+      );
+    `);    
+
     console.log("✅ Tablas verificadas.");
   } catch (err) {
     console.error("❌ Error al crear tablas:", err);
   }
 })();
+
 
 // === Registro de usuario ===
 app.post('/register', async (req, res) => {
@@ -173,8 +186,118 @@ app.get('/api/admin/data', async (req, res) => {
 
 // === Servir frontend ===
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.send("Backend MVI activo");
 });
+
+
+
+app.delete("/comentarios/:id", async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    await pool.query(`DELETE FROM comentarios WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al eliminar comentario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// Historial de comentarios por usuario (solo aprobados)
+app.get("/comentarios/usuario/:usuario", async (req, res) => {
+  const { usuario } = req.params;
+
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE usuario = $1 AND estado = 'aprobado'
+      ORDER BY fecha DESC
+    `, [usuario]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios del usuario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+
+app.put("/comentarios/:id/aprobar", async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    await pool.query(`
+      UPDATE comentarios
+      SET estado = 'aprobado'
+      WHERE id = $1
+    `, [id]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al aprobar comentario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+
+app.get("/comentarios/pendientes", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE estado = 'pendiente'
+      ORDER BY fecha ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios pendientes:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+
+
+app.post("/comentarios", async (req, res) => {
+  const { propiedad, usuario, contenido } = req.body;
+
+  if (!usuario || !contenido || !propiedad) {
+    return res.status(400).json({ success: false, message: "Faltan datos" });
+  }
+
+  try {
+    await pool.query(`
+      INSERT INTO comentarios (propiedad, usuario, contenido)
+      VALUES ($1, $2, $3)
+    `, [propiedad, usuario, contenido]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al guardar comentario:", err);
+    res.status(500).json({ success: false, message: "Error al guardar" });
+  }
+});
+
+app.get("/comentarios", async (req, res) => {
+  const propiedad = req.query.propiedad;
+
+  if (!propiedad) {
+    return res.status(400).json({ success: false, message: "Propiedad no especificada" });
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE propiedad = $1 AND estado = 'aprobado'
+      ORDER BY fecha DESC
+    `, [propiedad]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios:", err);
+    res.status(500).json({ success: false, message: "Error al obtener" });
+  }
+});
+
+
 
 // === Iniciar servidor ===
 app.listen(PORT, () => {
