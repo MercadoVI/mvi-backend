@@ -160,26 +160,22 @@ app.get('/api/admin/datos', async (req, res) => {
 });
 
 // === Eliminar usuario (solo admin) ===
-app.delete('/api/admin/usuarios/:id', async (req, res) => {
-  const id = req.params.id;
+// ✅ Nueva ruta para eliminar usuario por nombre (usuario)
+app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
+  const usuario = req.params.usuario;
 
-  if (!id) return res.status(400).json({ message: "ID requerido" });
+  if (!usuario || usuario === "MVI") {
+    return res.status(400).json({ message: "No permitido o usuario inválido." });
+  }
 
   try {
-    const userRes = await pool.query('SELECT usuario FROM usuarios WHERE id = $1', [id]);
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ message: "Usuario no encontrado" });
-    }
-
-    const usuario = userRes.rows[0].usuario;
-
     await pool.query('DELETE FROM inversiones WHERE usuario = $1', [usuario]);
-    await pool.query('DELETE FROM usuarios WHERE id = $1', [id]);
+    await pool.query('DELETE FROM usuarios WHERE usuario = $1', [usuario]);
 
-    res.json({ message: `Usuario "${usuario}" eliminado correctamente` });
+    res.json({ message: `Usuario "${usuario}" eliminado correctamente.` });
   } catch (err) {
     console.error("Error al eliminar usuario:", err);
-    res.status(500).json({ message: "Error al eliminar usuario" });
+    res.status(500).json({ message: "Error al eliminar usuario." });
   }
 });
 
