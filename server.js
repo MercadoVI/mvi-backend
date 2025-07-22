@@ -304,6 +304,22 @@ app.get("/comentarios", async (req, res) => {
   }
 });
 
+app.post("/api/actualizar-perfil", async (req, res) => {
+  const { original, nuevoUsuario, nuevaDescripcion } = req.body;
+  if (!original || !nuevoUsuario) return res.status(400).json({ success: false, message: "Faltan datos" });
+
+  try {
+    const stmt = db.prepare("UPDATE usuarios SET usuario = ?, descripcion = ? WHERE usuario = ?");
+    const result = stmt.run(nuevoUsuario, nuevaDescripcion, original);
+    if (result.changes > 0) {
+      res.json({ success: true });
+    } else {
+      res.json({ success: false, message: "No se actualizó ningún perfil." });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Error en la base de datos", error: err.message });
+  }
+});
 
 
 // === Iniciar servidor ===
