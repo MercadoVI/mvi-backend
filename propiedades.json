@@ -1,20 +1,62 @@
 [
-  {
-    "id": "HM-ESP",
-    "imagen": "hm-esp.webp",
-    "rentabilidad": "23",
-    "nombre": "Holton Madrid"
-  },
-  {
-    "id": "TR-ITA",
-    "imagen": "rr-ita.webp",
-    "rentabilidad": "34",
-    "nombre": "Torre Reale"
-  },
-  {
-    "id": "SKSA-AUS",
-    "imagen": "sksa-aus.webp",
-    "rentabilidad": "21.6",
-    "nombre": "SkySouth Australia"
-  }
+    {
+        "id": "HM-ESP",
+        "imagen": "hm-esp.webp",
+        "rentabilidad": "34",
+        "nombre": "Holton Madrid"
+    },
+    {
+        "id": "HAB-ESP",
+        "imagen": "hab-esp.webp",
+        "rentabilidad": "34",
+        "nombre": "Hotel Aurum Barcelona"
+    },
+    {
+        "id": "HS-FRA",
+        "imagen": "sh-fra.webp",
+        "rentabilidad": "34",
+        "nombre": "Hôtel Stellar"
+    },
+    {
+        "id": "TR-ITA",
+        "imagen": "rr-ita.webp",
+        "rentabilidad": "34",
+        "nombre": "Trivium Roma"
+    },
+    {
+        "id": "CB-ALE",
+        "imagen": "cb-deu.webp",
+        "rentabilidad": "34",
+        "nombre": "Crystalium Berlin"
+    },
+    {
+        "id": "TB-GBR",
+        "imagen": "tb-gbr.webp",
+        "rentabilidad": "34",
+        "nombre": "Thames Blade"
+    },
+    {
+        "id": "TT-EEUU",
+        "imagen": "tt-usa.webp",
+        "rentabilidad": "34",
+        "nombre": "TT One Manhattan"
+    },
+    {
+        "id": "MG-JPN",
+        "imagen": "mg-jpn.webp",
+        "rentabilidad": "34",
+        "nombre": "Mirai Garden"
+    },
+    {
+        "id": "SKSA-AUS",
+        "imagen": "sksa-aus.webp",
+        "rentabilidad": "34",
+        "nombre": "SkySail Airport"
+    },
+    {
+        "id": "HMB-SGP",
+        "imagen": "hmbs-sgp.webp",
+        "rentabilidad": "34",
+        "nombre": "Heliora Majestic Bay"
+    }
 ]
