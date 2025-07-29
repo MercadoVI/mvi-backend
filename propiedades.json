@@ -2,19 +2,19 @@
     {
         "id": "HM-ESP",
         "imagen": "hm-esp.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "23",
         "nombre": "Holton Madrid"
     },
     {
         "id": "HAB-ESP",
         "imagen": "hab-esp.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "27.6",
         "nombre": "Hotel Aurum Barcelona"
     },
     {
         "id": "HS-FRA",
         "imagen": "sh-fra.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "35.6",
         "nombre": "Hôtel Stellar"
     },
     {
@@ -26,37 +26,37 @@
     {
         "id": "CB-ALE",
         "imagen": "cb-deu.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "36.1",
         "nombre": "Crystalium Berlin"
     },
     {
         "id": "TB-GBR",
         "imagen": "tb-gbr.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "13",
         "nombre": "Thames Blade"
     },
     {
         "id": "TT-EEUU",
         "imagen": "tt-usa.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "50.5",
         "nombre": "TT One Manhattan"
     },
     {
         "id": "MG-JPN",
         "imagen": "mg-jpn.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "38.4",
         "nombre": "Mirai Garden"
     },
     {
         "id": "SKSA-AUS",
         "imagen": "sksa-aus.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "21.6",
         "nombre": "SkySail Airport"
     },
     {
         "id": "HMB-SGP",
         "imagen": "hmbs-sgp.webp",
-        "rentabilidad": "34",
+        "rentabilidad": "45.2",
         "nombre": "Heliora Majestic Bay"
     }
 ]
