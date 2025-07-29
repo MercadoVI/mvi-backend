@@ -3,60 +3,70 @@
         "id": "HM-ESP",
         "imagen": "hm-esp.webp",
         "rentabilidad": "23",
-        "nombre": "Holton Madrid"
+        "nombre": "Holton Madrid",
+        "link":"hm-esp.html"
     },
     {
         "id": "HAB-ESP",
         "imagen": "hab-esp.webp",
         "rentabilidad": "27.6",
-        "nombre": "Hotel Aurum Barcelona"
+        "nombre": "Hotel Aurum Barcelona",
+        "link":"hab-esp.html"
     },
     {
         "id": "HS-FRA",
         "imagen": "sh-fra.webp",
         "rentabilidad": "35.6",
-        "nombre": "Hôtel Stellar"
+        "nombre": "Hôtel Stellar",
+        "link": "sh-fra.html"
     },
     {
         "id": "TR-ITA",
         "imagen": "rr-ita.webp",
         "rentabilidad": "34",
-        "nombre": "Trivium Roma"
+        "nombre": "Trivium Roma",
+        "link": "rr-ita.html"
     },
     {
         "id": "CB-ALE",
         "imagen": "cb-deu.webp",
         "rentabilidad": "36.1",
-        "nombre": "Crystalium Berlin"
+        "nombre": "Crystalium Berlin",
+        "link": "cb-deu.html"
     },
     {
         "id": "TB-GBR",
         "imagen": "tb-gbr.webp",
         "rentabilidad": "13",
-        "nombre": "Thames Blade"
+        "nombre": "Thames Blade",
+        "link": "tb-gbr.html"
     },
     {
         "id": "TT-EEUU",
         "imagen": "tt-usa.webp",
         "rentabilidad": "50.5",
-        "nombre": "TT One Manhattan"
+        "nombre": "TT One Manhattan",
+        "link": "tt-eeuu.html"
     },
     {
         "id": "MG-JPN",
         "imagen": "mg-jpn.webp",
         "rentabilidad": "38.4",
-        "nombre": "Mirai Garden"
+        "nombre": "Mirai Garden",
+        "link": "mg-jpn.html"
     },
     {
         "id": "SKSA-AUS",
         "imagen": "sksa-aus.webp",
         "rentabilidad": "21.6",
-        "nombre": "SkySail Airport"
+        "nombre": "SkySail Airport",
+        "link": "sksa-aus.html"
     },
     {
         "id": "HMB-SGP",
         "imagen": "hmbs-sgp.webp",
         "rentabilidad": "45.2",
-        "nombre": "Heliora Majestic Bay"
+        "nombre": "Heliora Majestic Bay",
+        "link": "hmbs-sgp.html"
     }
 ]
