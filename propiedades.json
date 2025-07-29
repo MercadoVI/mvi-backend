@@ -1,0 +1,20 @@
+[
+  {
+    "id": "HM-ESP",
+    "imagen": "hm-esp.webp",
+    "rentabilidad": "23",
+    "nombre": "Holton Madrid"
+  },
+  {
+    "id": "TR-ITA",
+    "imagen": "rr-ita.webp",
+    "rentabilidad": "34",
+    "nombre": "Torre Reale"
+  },
+  {
+    "id": "SKSA-AUS",
+    "imagen": "sksa-aus.webp",
+    "rentabilidad": "21.6",
+    "nombre": "SkySouth Australia"
+  }
+]

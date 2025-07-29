@@ -3,6 +3,7 @@ const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const { Pool } = require('pg');
+const propiedades = require('./propiedades.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,7 +51,16 @@ app.use(express.json());
         fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         estado TEXT DEFAULT 'pendiente'
       );
-    `);    
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS favoritos (
+      id SERIAL PRIMARY KEY,
+      usuario TEXT NOT NULL REFERENCES usuarios(usuario) ON DELETE CASCADE,
+      propiedad TEXT NOT NULL
+    );
+  `);
+
 
     console.log("✅ Tablas verificadas.");
   } catch (err) {
@@ -320,6 +330,73 @@ app.post("/api/actualizar-perfil", async (req, res) => {
     res.status(500).json({ success: false, message: "Error en la base de datos", error: err.message });
   }
 });
+
+
+// === Añadir favorito ===
+app.post('/api/favoritos', async (req, res) => {
+  const { usuario, propiedadId } = req.body;
+  if (!usuario || !propiedadId)
+    return res.status(400).json({ success: false, message: "Faltan datos." });
+
+  try {
+    const existe = await pool.query(
+      'SELECT * FROM favoritos WHERE usuario = $1 AND propiedad = $2',
+      [usuario, propiedadId]
+    );
+    if (existe.rows.length > 0)
+      return res.status(409).json({ success: false, message: "Ya es favorito." });
+
+    await pool.query(
+      'INSERT INTO favoritos (usuario, propiedad) VALUES ($1, $2)',
+      [usuario, propiedadId]
+    );
+    res.json({ success: true, message: "Añadido a favoritos." });
+  } catch (err) {
+    console.error("Error añadiendo favorito:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// === Eliminar favorito ===
+app.delete('/api/favoritos', async (req, res) => {
+  const { usuario, propiedadId } = req.body;
+  if (!usuario || !propiedadId)
+    return res.status(400).json({ success: false, message: "Faltan datos." });
+
+  try {
+    await pool.query(
+      'DELETE FROM favoritos WHERE usuario = $1 AND propiedad = $2',
+      [usuario, propiedadId]
+    );
+    res.json({ success: true, message: "Favorito eliminado." });
+  } catch (err) {
+    console.error("Error eliminando favorito:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// === Obtener favoritos de un usuario ===
+app.get('/api/favoritos/:usuario', async (req, res) => {
+  const { usuario } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT propiedad FROM favoritos WHERE usuario = $1',
+      [usuario]
+    );
+    const favoritos = result.rows.map(row => row.propiedad);
+    res.json(favoritos);
+  } catch (err) {
+    console.error("Error obteniendo favoritos:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+app.get('/api/propiedades/:id', (req, res) => {
+  const prop = propiedades.find(p => p.id === req.params.id);
+  if (!prop) return res.status(404).json({ success: false });
+  res.json(prop);
+});
+
 
 
 // === Iniciar servidor ===
