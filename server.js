@@ -540,6 +540,60 @@ app.get('/api/propiedades/:id', (req, res) => {
   res.json(prop);
 });
 
+// === Registro de embajadores ===
+app.post('/api/embajadores', async (req, res) => {
+  const { email, acepta_privacidad, acepta_terminos } = req.body;
+  const ip = req.ip;
+
+  if (!email || !acepta_privacidad || !acepta_terminos) {
+    return res.status(400).json({ error: "Faltan datos o no se aceptaron los términos." });
+  }
+
+  try {
+    // Crear usuario tipo 'Embajador' si no existe
+    await pool.query(`
+      INSERT INTO usuarios (usuario, email, password, tipo)
+      VALUES ($1, $1, '', 'Embajador')
+      ON CONFLICT (usuario) DO NOTHING
+    `, [email]);
+
+    // Obtener id del usuario
+    const result = await pool.query(`SELECT id FROM usuarios WHERE usuario = $1`, [email]);
+    const userId = result.rows[0].id;
+
+    // Insertar consentimiento
+    await pool.query(`
+      INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos, ip_usuario)
+      VALUES ($1, $2, $3, $4)
+    `, [userId, true, true, ip]);
+
+    res.status(201).json({ message: "Embajador registrado correctamente" });
+  } catch (error) {
+    console.error("Error al registrar embajador:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+// === Ver embajadores y sus consentimientos (solo admin) ===
+app.get('/api/admin/embajadores', async (req, res) => {
+  const admin = req.query.admin;
+  if (admin !== 'MVI') return res.status(403).json({ error: "Acceso denegado" });
+
+  try {
+    const result = await pool.query(`
+      SELECT u.email, c.acepta_privacidad, c.acepta_terminos, c.fecha_consentimiento, c.version_politica, c.ip_usuario
+      FROM usuarios u
+      JOIN consentimientos c ON u.id = c.user_id
+      WHERE u.tipo = 'Embajador'
+      ORDER BY c.fecha_consentimiento DESC
+    `);
+
+    res.json({ success: true, datos: result.rows });
+  } catch (err) {
+    console.error("Error al obtener embajadores:", err);
+    res.status(500).json({ success: false, error: "Error interno del servidor" });
+  }
+});
 
 
 // === Iniciar servidor ===
