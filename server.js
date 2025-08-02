@@ -114,7 +114,7 @@ function verificarToken(req, res, next) {
 app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT u.username, u.email, c.fecha_consentimiento, c.version_politica, c.ip_usuario
+      SELECT u.usuario, u.email, c.fecha_consentimiento, c.version_politica, c.ip_usuario
       FROM consentimientos c
       JOIN usuarios u ON u.id = c.user_id
       ORDER BY c.fecha_consentimiento DESC
@@ -126,6 +126,7 @@ app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req,
     res.status(500).json({ error: "Error interno del servidor" });
   }
 });
+
 
 
 
