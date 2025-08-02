@@ -211,6 +211,26 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Comprobar si el usuario ha aceptado los consentimientos
+app.get('/api/consentimientos/:usuario', async (req, res) => {
+  const { usuario } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT * FROM consentimientos WHERE usuario = $1 ORDER BY fecha DESC LIMIT 1',
+      [usuario]
+    );
+    if (result.rows.length > 0 && result.rows[0].acepta_privacidad && result.rows[0].acepta_terminos) {
+      res.json({ aceptado: true });
+    } else {
+      res.json({ aceptado: false });
+    }
+  } catch (error) {
+    console.error('Error al comprobar consentimiento:', error);
+    res.status(500).json({ error: 'Error al consultar consentimiento' });
+  }
+});
+
+
 
 // === Registrar inversión ===
 app.post('/api/inversion', async (req, res) => {
