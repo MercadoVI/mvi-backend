@@ -132,7 +132,7 @@ app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req,
 
 // === Registro de usuario ===
 app.post("/register", async (req, res) => {
-  const { username, email, password, acepta_privacidad, acepta_terminos } = req.body;
+  const { usuario, email, password, acepta_privacidad, acepta_terminos } = req.body;
   const ip = req.ip;
 
   if (!acepta_privacidad || !acepta_terminos) {
@@ -147,11 +147,12 @@ app.post("/register", async (req, res) => {
 
     // 1. Crear usuario
     const result = await client.query(
-      `INSERT INTO usuarios (username, email, password)
+      `INSERT INTO usuarios (usuario, email, password)
        VALUES ($1, $2, $3)
        RETURNING id`,
-      [username, email, hashedPassword]
+      [usuario, email, hashedPassword]
     );
+
     const userId = result.rows[0].id;
 
     // 2. Registrar consentimiento
