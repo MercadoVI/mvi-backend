@@ -62,7 +62,7 @@ app.use(express.json());
   `);
 
     await pool.query(`
-      CREATE TABLE consentimientos (
+      CREATE TABLE IF NOT EXISTS consentimientos (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
         acepta_privacidad BOOLEAN NOT NULL,
