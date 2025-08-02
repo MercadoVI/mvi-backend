@@ -61,6 +61,20 @@ app.use(express.json());
     );
   `);
 
+    await pool.query(`
+      CREATE TABLE consentimientos (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+        acepta_privacidad BOOLEAN NOT NULL,
+        acepta_terminos BOOLEAN NOT NULL,
+        acepta_cookies BOOLEAN DEFAULT false,
+        fecha_consentimiento TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        version_politica TEXT DEFAULT 'v1.0 - 2025-08-02',
+        ip_usuario TEXT
+      );
+
+
+  `);
 
     console.log("✅ Tablas verificadas.");
   } catch (err) {
@@ -68,29 +82,97 @@ app.use(express.json());
   }
 })();
 
+function verificarAdminMVI(req, res, next) {
+  const usuario = req.usuario; // Este debe estar ya seteado por el middleware de autenticación
 
-// === Registro de usuario ===
-app.post('/register', async (req, res) => {
-  const { usuario, password, email } = req.body;
-  if (!usuario || !password || !email)
-    return res.status(400).json({ success: false, message: 'Faltan campos obligatorios.' });
+  if (usuario && usuario.username === "MVI") {
+    next();
+  } else {
+    res.status(403).json({ error: "Acceso denegado. Solo para el administrador MVI." });
+  }
+}
 
+const jwt = require("jsonwebtoken");
+
+function verificarToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Token no proporcionado" });
+  }
+
+  jwt.verify(token, "CLAVE_SECRETA", (err, decoded) => {
+    if (err) return res.status(403).json({ error: "Token inválido" });
+
+    req.usuario = decoded; // contiene username y cualquier dato que codifiques
+    next();
+  });
+}
+
+
+app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req, res) => {
   try {
-    const existing = await pool.query('SELECT * FROM usuarios WHERE usuario = $1', [usuario]);
-    if (existing.rows.length > 0)
-      return res.status(409).json({ success: false, message: 'El usuario ya existe.' });
+    const result = await pool.query(`
+      SELECT u.username, u.email, c.fecha_consentimiento, c.version_politica, c.ip_usuario
+      FROM consentimientos c
+      JOIN usuarios u ON u.id = c.user_id
+      ORDER BY c.fecha_consentimiento DESC
+    `);
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    await pool.query(
-      'INSERT INTO usuarios (usuario, password, email, tipo) VALUES ($1, $2, $3, $4)',
-      [usuario, hashedPassword, email, 'Inversor']
-    );
-    res.json({ success: true, message: 'Usuario registrado con éxito.' });
+    res.json(result.rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: 'Error al registrar el usuario.' });
+    console.error("Error al consultar consentimientos:", err);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
 });
+
+
+
+// === Registro de usuario ===
+app.post("/register", async (req, res) => {
+  const { username, email, password, acepta_privacidad, acepta_terminos } = req.body;
+  const ip = req.ip;
+
+  if (!acepta_privacidad || !acepta_terminos) {
+    return res.status(400).json({ error: "Debes aceptar las políticas legales." });
+  }
+
+  const client = await pool.connect();
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  try {
+    await client.query("BEGIN");
+
+    // 1. Crear usuario
+    const result = await client.query(
+      `INSERT INTO usuarios (username, email, password)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [username, email, hashedPassword]
+    );
+    const userId = result.rows[0].id;
+
+    // 2. Registrar consentimiento
+    await client.query(
+      `INSERT INTO consentimientos (
+        user_id, acepta_privacidad, acepta_terminos, ip_usuario
+      ) VALUES ($1, $2, $3, $4)`,
+      [userId, true, true, ip]
+    );
+
+    await client.query("COMMIT");
+
+    res.status(201).json({ message: "Registro completado con consentimiento guardado" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Error al registrar consentimiento:", err);
+    res.status(500).json({ error: "Error interno" });
+  } finally {
+    client.release();
+  }
+});
+
 
 // === Login de usuario ===
 app.post('/login', async (req, res) => {
@@ -98,14 +180,23 @@ app.post('/login', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM usuarios WHERE usuario = $1', [usuario]);
     const user = result.rows[0];
+
     if (!user) return res.status(401).json({ success: false, message: 'Usuario o contraseña incorrectos.' });
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ success: false, message: 'Usuario o contraseña incorrectos.' });
 
+    // Crear token JWT
+    const token = jwt.sign(
+      { id: user.id, username: user.usuario, tipo: user.tipo },
+      'CLAVE_SECRETA',
+      { expiresIn: '2h' }
+    );
+
     res.json({
       success: true,
       message: 'Inicio de sesión correcto.',
+      token,
       user: {
         id: user.id,
         usuario: user.usuario,
@@ -117,6 +208,7 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ success: false, message: 'Error al iniciar sesión.' });
   }
 });
+
 
 // === Registrar inversión ===
 app.post('/api/inversion', async (req, res) => {
