@@ -215,10 +215,15 @@ app.post('/login', async (req, res) => {
 app.get('/api/consentimientos/:usuario', async (req, res) => {
   const { usuario } = req.params;
   try {
-    const result = await pool.query(
-      'SELECT * FROM consentimientos WHERE usuario = $1 ORDER BY fecha DESC LIMIT 1',
-      [usuario]
-    );
+    const result = await pool.query(`
+      SELECT c.*
+      FROM consentimientos c
+      JOIN usuarios u ON u.id = c.user_id
+      WHERE u.usuario = $1
+      ORDER BY c.fecha_consentimiento DESC
+      LIMIT 1
+    `, [usuario]);
+
     if (result.rows.length > 0 && result.rows[0].acepta_privacidad && result.rows[0].acepta_terminos) {
       res.json({ aceptado: true });
     } else {
@@ -229,6 +234,30 @@ app.get('/api/consentimientos/:usuario', async (req, res) => {
     res.status(500).json({ error: 'Error al consultar consentimiento' });
   }
 });
+
+
+app.post('/api/consentimientos', async (req, res) => {
+  const { usuario, acepta_privacidad, acepta_terminos } = req.body;
+
+  try {
+    const result = await pool.query('SELECT id FROM usuarios WHERE usuario = $1', [usuario]);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    const userId = result.rows[0].id;
+
+    await pool.query(
+      `INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos)
+       VALUES ($1, $2, $3)`,
+      [userId, acepta_privacidad, acepta_terminos]
+    );
+
+    res.status(201).json({ message: 'Consentimiento registrado correctamente' });
+  } catch (error) {
+    console.error("Error al registrar consentimiento:", error);
+    res.status(500).json({ error: "Error al guardar el consentimiento" });
+  }
+});
+
 
 
 
