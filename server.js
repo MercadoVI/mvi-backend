@@ -16,6 +16,7 @@ const pool = new Pool({
 
 // === Middleware ===
 app.use(cors());
+app.use(express.static(__dirname));
 app.use(express.json());
 
 // === Crear tablas si no existen ===
