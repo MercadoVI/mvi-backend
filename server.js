@@ -84,11 +84,11 @@ app.use(express.json());
 
 
     // —— Comunidad (requiere UUID)
-    await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_posts (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         autor   TEXT NOT NULL,  -- copia rápida de usuarios.usuario
         categoria TEXT NOT NULL CHECK (categoria IN ('Opinión','Análisis','Pregunta','Noticias')),
@@ -101,7 +101,7 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_comments (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
         user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         contenido TEXT NOT NULL,
@@ -120,7 +120,7 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_poll_options (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
         idx INT NOT NULL,
         texto TEXT NOT NULL
@@ -139,7 +139,7 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_notifications (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         titulo  TEXT NOT NULL,
         mensaje TEXT NOT NULL,
@@ -740,9 +740,10 @@ communityRouter.get('/posts', async (req, res) => {
     let i = 1;
 
     if (cats.length) {
-      where.push(`p.categoria = ANY($${i++})`);
+      where.push(`p.categoria = ANY($${i++}::text[])`);
       params.push(cats);
     }
+
     if (q) {
       where.push(`(p.titulo ILIKE $${i} OR (p.contenido->>'text') ILIKE $${i})`);
       params.push(`%${q}%`);
