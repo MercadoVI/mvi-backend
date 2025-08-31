@@ -1,26 +1,24 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const propiedades = require('./propiedades.json');
-const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Render / proxies: obtener IP real en req.ip
-app.set('trust proxy', 1);
-
-// === PostgreSQL ===
+// ========= DB (Render) =========
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // necesario en Render
+  ssl: { rejectUnauthorized: false }
 });
 
-// === Middleware ===
+// ========= Middleware =========
 app.use(cors({
-  origin: true, // o especifica tu dominio: ['https://tu-dominio.com']
+  origin: true,            // o pon tu dominio del frontend
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Username'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
@@ -28,16 +26,18 @@ app.use(cors({
 app.use(express.static(__dirname));
 app.use(express.json());
 
-// === Crear tablas si no existen ===
+// ========= Bootstrap / Migraciones =========
 (async () => {
   try {
+    // Tablas base
     await pool.query(`
       CREATE TABLE IF NOT EXISTS usuarios (
         id SERIAL PRIMARY KEY,
         usuario TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
         email TEXT NOT NULL,
-        tipo TEXT DEFAULT 'Inversor'
+        tipo TEXT DEFAULT 'Inversor',
+        descripcion TEXT
       );
     `);
 
@@ -76,35 +76,48 @@ app.use(express.json());
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
         acepta_privacidad BOOLEAN NOT NULL,
-        acepta_terminos  BOOLEAN NOT NULL,
-        acepta_cookies   BOOLEAN DEFAULT false,
+        acepta_terminos   BOOLEAN NOT NULL,
+        acepta_cookies    BOOLEAN DEFAULT false,
         fecha_consentimiento TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        version_politica TEXT DEFAULT 'v1.0 - 2025-08-02',
-        ip_usuario TEXT
+        version_politica  TEXT DEFAULT 'v1.0 - 2025-08-02',
+        ip_usuario        TEXT
       );
     `);
 
-    // —— Comunidad (UUID con pgcrypto)
+    // Extensiones UUID (Render suele permitirlas)
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
 
+    // Comunidad
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_posts (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-        autor   TEXT NOT NULL,
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id   INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         categoria TEXT NOT NULL CHECK (categoria IN ('Opinión','Análisis','Pregunta','Noticias')),
-        titulo   TEXT NOT NULL,
-        contenido JSONB NOT NULL,   -- { "text": "..." } o ["opt1","opt2",...]
-        tipo     TEXT NOT NULL DEFAULT 'post',  -- 'post' | 'encuesta'
+        titulo    TEXT NOT NULL,
+        contenido JSONB NOT NULL,  -- {text:"..."} o ["opt1","opt2",...]
+        tipo      TEXT NOT NULL DEFAULT 'post', -- 'post' | 'encuesta'
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
 
+    // Migración: añade columna 'autor' si falta y rellena
+    await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS autor TEXT;`);
+    await pool.query(`
+      UPDATE community_posts p
+         SET autor = u.usuario
+        FROM usuarios u
+       WHERE p.user_id = u.id
+         AND p.autor IS NULL;
+    `);
+    // Si quieres forzar NOT NULL cuando ya esté rellena:
+    // await pool.query(`ALTER TABLE community_posts ALTER COLUMN autor SET NOT NULL;`);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_comments (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        post_id  UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+        user_id  INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         contenido TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -112,8 +125,8 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_likes (
-        post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        post_id  UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+        user_id  INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (post_id, user_id)
       );
@@ -121,7 +134,7 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_poll_options (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
         idx INT NOT NULL,
         texto TEXT NOT NULL
@@ -130,9 +143,9 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_poll_votes (
-        post_id UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+        post_id   UUID NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
         option_idx INT NOT NULL,
-        user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        user_id    INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (post_id, user_id)
       );
@@ -140,7 +153,7 @@ app.use(express.json());
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS community_notifications (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
         titulo  TEXT NOT NULL,
         mensaje TEXT NOT NULL,
@@ -149,38 +162,36 @@ app.use(express.json());
       );
     `);
 
-    // Índices útiles
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_created_at ON community_posts(created_at DESC);`);
-    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_categoria ON community_posts(categoria);`);
-    await pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS descripcion TEXT;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_categoria   ON community_posts(categoria);`);
 
-    console.log("✅ Tablas verificadas.");
+    console.log('✅ Tablas verificadas / migradas.');
   } catch (err) {
-    console.error("❌ Error al crear tablas:", err);
+    console.error('❌ Error al crear/migrar tablas:', err);
   }
 })();
 
-// === Auth helpers ===
+// ========= Helpers Auth =========
 function verificarAdminMVI(req, res, next) {
   const usuario = req.usuario;
-  if (usuario && usuario.username === "MVI") return next();
-  return res.status(403).json({ error: "Acceso denegado. Solo para el administrador MVI." });
+  if (usuario && usuario.username === 'MVI') return next();
+  res.status(403).json({ error: 'Acceso denegado. Solo para el administrador MVI.' });
 }
 
 function verificarToken(req, res, next) {
   const authHeader = req.headers.authorization;
-  const token = authHeader?.split(" ")[1];
-  if (!token) return res.status(401).json({ error: "Token no proporcionado" });
+  const token = authHeader?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Token no proporcionado' });
 
-  jwt.verify(token, "CLAVE_SECRETA", (err, decoded) => {
-    if (err) return res.status(403).json({ error: "Token inválido" });
+  jwt.verify(token, process.env.JWT_SECRET || 'CLAVE_SECRETA', (err, decoded) => {
+    if (err) return res.status(403).json({ error: 'Token inválido' });
     req.usuario = decoded; // { id, username, tipo }
     next();
   });
 }
 
-// === Rutas admin simples ===
-app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req, res) => {
+// ========= Rutas varias =========
+app.get('/admin/consentimientos', verificarToken, verificarAdminMVI, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.usuario, u.email, c.fecha_consentimiento, c.version_politica, c.ip_usuario
@@ -190,25 +201,22 @@ app.get("/admin/consentimientos", verificarToken, verificarAdminMVI, async (req,
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Error al consultar consentimientos:", err);
-    res.status(500).json({ error: "Error interno del servidor" });
+    console.error('Error al consultar consentimientos:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
-// === Registro ===
-app.post("/register", async (req, res) => {
+// Registro
+app.post('/register', async (req, res) => {
   const { usuario, email, password, acepta_privacidad, acepta_terminos } = req.body;
   const ip = req.ip;
-
   if (!acepta_privacidad || !acepta_terminos) {
-    return res.status(400).json({ error: "Debes aceptar las políticas legales." });
+    return res.status(400).json({ error: 'Debes aceptar las políticas legales.' });
   }
-
   const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const hashedPassword = await bcrypt.hash(password, 10);
-    await client.query("BEGIN");
-
     const result = await client.query(
       `INSERT INTO usuarios (usuario, email, password)
        VALUES ($1, $2, $3)
@@ -216,25 +224,23 @@ app.post("/register", async (req, res) => {
       [usuario, email, hashedPassword]
     );
     const userId = result.rows[0].id;
-
     await client.query(
       `INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos, ip_usuario)
-       VALUES ($1, $2, $3, $4)`,
+       VALUES ($1,$2,$3,$4)`,
       [userId, true, true, ip]
     );
-
-    await client.query("COMMIT");
-    res.status(201).json({ message: "Registro completado con consentimiento guardado" });
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Registro completado con consentimiento guardado' });
   } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Error al registrar consentimiento:", err);
-    res.status(500).json({ error: "Error interno" });
+    await client.query('ROLLBACK');
+    console.error('Error al registrar consentimiento:', err);
+    res.status(500).json({ error: 'Error interno' });
   } finally {
     client.release();
   }
 });
 
-// === Login ===
+// Login
 app.post('/login', async (req, res) => {
   const { usuario, password } = req.body;
   try {
@@ -247,7 +253,7 @@ app.post('/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user.id, username: user.usuario, tipo: user.tipo },
-      'CLAVE_SECRETA',
+      process.env.JWT_SECRET || 'CLAVE_SECRETA',
       { expiresIn: '2h' }
     );
 
@@ -262,7 +268,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// === Consentimientos ===
+// Consentimientos
 app.get('/api/consentimientos/:usuario', async (req, res) => {
   const { usuario } = req.params;
   try {
@@ -274,9 +280,8 @@ app.get('/api/consentimientos/:usuario', async (req, res) => {
       ORDER BY c.fecha_consentimiento DESC
       LIMIT 1
     `, [usuario]);
-
-    const r = result.rows[0];
-    res.json({ aceptado: !!(r && r.acepta_privacidad && r.acepta_terminos) });
+    const row = result.rows[0];
+    res.json({ aceptado: !!(row && row.acepta_privacidad && row.acepta_terminos) });
   } catch (error) {
     console.error('Error al comprobar consentimiento:', error);
     res.status(500).json({ error: 'Error al consultar consentimiento' });
@@ -287,41 +292,42 @@ app.post('/api/consentimientos', async (req, res) => {
   const { usuario, acepta_privacidad, acepta_terminos } = req.body;
   try {
     const result = await pool.query('SELECT id FROM usuarios WHERE usuario = $1', [usuario]);
-    if (result.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+    const userId = result.rows[0].id;
 
     await pool.query(
       `INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos)
-       VALUES ($1, $2, $3)`,
-      [result.rows[0].id, acepta_privacidad, acepta_terminos]
+       VALUES ($1,$2,$3)`,
+      [userId, acepta_privacidad, acepta_terminos]
     );
     res.status(201).json({ message: 'Consentimiento registrado correctamente' });
   } catch (error) {
-    console.error("Error al registrar consentimiento:", error);
-    res.status(500).json({ error: "Error al guardar el consentimiento" });
+    console.error('Error al registrar consentimiento:', error);
+    res.status(500).json({ error: 'Error al guardar el consentimiento' });
   }
 });
 
-// === Inversiones / Perfil / Admin simples ===
+// Inversiones
 app.post('/api/inversion', async (req, res) => {
   const { usuario, propiedad, cantidad, divisa } = req.body;
   if (!usuario || !propiedad || !cantidad || !divisa)
-    return res.status(400).json({ success: false, message: "Faltan datos obligatorios." });
-
+    return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
   try {
     await pool.query(
-      'INSERT INTO inversiones (usuario, propiedad, cantidad, divisa) VALUES ($1, $2, $3, $4)',
+      'INSERT INTO inversiones (usuario, propiedad, cantidad, divisa) VALUES ($1,$2,$3,$4)',
       [usuario, propiedad, cantidad, divisa]
     );
-    res.json({ success: true, message: "Inversión registrada correctamente." });
+    res.json({ success: true, message: 'Inversión registrada correctamente.' });
   } catch {
-    res.status(500).json({ success: false, message: "Error al registrar inversión." });
+    res.status(500).json({ success: false, message: 'Error al registrar inversión.' });
   }
 });
 
+// Perfil
 app.get('/api/perfil/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
   try {
-    const userResult = await pool.query('SELECT usuario, email FROM usuarios WHERE usuario = $1', [usuario]);
+    const userResult = await pool.query('SELECT usuario, email, descripcion FROM usuarios WHERE usuario = $1', [usuario]);
     if (userResult.rows.length === 0)
       return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
 
@@ -329,37 +335,37 @@ app.get('/api/perfil/:usuario', async (req, res) => {
       'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
       [usuario]
     );
-
     res.json({ success: true, user: userResult.rows[0], inversiones: inversiones.rows });
   } catch {
     res.status(500).json({ success: false, message: 'Error al recuperar perfil.' });
   }
 });
 
+// Admin
 app.get('/api/admin/datos', async (req, res) => {
   const admin = req.query.admin;
-  if (admin !== 'MVI') return res.status(403).json({ success: false, message: "Acceso denegado." });
+  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   try {
     const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
     const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
     res.json({ success: true, usuarios: usuarios.rows, inversiones: inversiones.rows });
   } catch {
-    res.status(500).json({ success: false, message: "Error al obtener datos." });
+    res.status(500).json({ success: false, message: 'Error al obtener datos.' });
   }
 });
 
 app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
-  if (!usuario || usuario === "MVI") {
-    return res.status(400).json({ message: "No permitido o usuario inválido." });
+  if (!usuario || usuario === 'MVI') {
+    return res.status(400).json({ message: 'No permitido o usuario inválido.' });
   }
   try {
     await pool.query('DELETE FROM inversiones WHERE usuario = $1', [usuario]);
     await pool.query('DELETE FROM usuarios WHERE usuario = $1', [usuario]);
     res.json({ message: `Usuario "${usuario}" eliminado correctamente.` });
   } catch (err) {
-    console.error("Error al eliminar usuario:", err);
-    res.status(500).json({ message: "Error al eliminar usuario." });
+    console.error('Error al eliminar usuario:', err);
+    res.status(500).json({ message: 'Error al eliminar usuario.' });
   }
 });
 
@@ -369,22 +375,22 @@ app.get('/api/admin/data', async (_req, res) => {
     const inversiones = await pool.query('SELECT * FROM inversiones');
     res.json({ usuarios: usuarios.rows, inversiones: inversiones.rows });
   } catch {
-    res.status(500).json({ message: "Error interno del servidor" });
+    res.status(500).json({ message: 'Error interno del servidor' });
   }
 });
 
-// === Comentarios de propiedades (no comunidad) ===
-app.delete("/comentarios/:id", async (req, res) => {
+// Comentarios propiedades
+app.delete('/comentarios/:id', async (req, res) => {
   try {
-    await pool.query(`DELETE FROM comentarios WHERE id = $1`, [req.params.id]);
+    await pool.query('DELETE FROM comentarios WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (err) {
-    console.error("Error al eliminar comentario:", err);
+    console.error('Error al eliminar comentario:', err);
     res.status(500).json({ success: false });
   }
 });
 
-app.get("/comentarios/usuario/:usuario", async (req, res) => {
+app.get('/comentarios/usuario/:usuario', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT * FROM comentarios
@@ -393,22 +399,22 @@ app.get("/comentarios/usuario/:usuario", async (req, res) => {
     `, [req.params.usuario]);
     res.json(result.rows);
   } catch (err) {
-    console.error("Error al obtener comentarios del usuario:", err);
+    console.error('Error al obtener comentarios del usuario:', err);
     res.status(500).json({ success: false });
   }
 });
 
-app.put("/comentarios/:id/aprobar", async (req, res) => {
+app.put('/comentarios/:id/aprobar', async (req, res) => {
   try {
-    await pool.query(`UPDATE comentarios SET estado = 'aprobado' WHERE id = $1`, [req.params.id]);
+    await pool.query(`UPDATE comentarios SET estado='aprobado' WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
   } catch (err) {
-    console.error("Error al aprobar comentario:", err);
+    console.error('Error al aprobar comentario:', err);
     res.status(500).json({ success: false });
   }
 });
 
-app.get("/comentarios/pendientes", async (_req, res) => {
+app.get('/comentarios/pendientes', async (_req, res) => {
   try {
     const result = await pool.query(`
       SELECT * FROM comentarios
@@ -417,116 +423,116 @@ app.get("/comentarios/pendientes", async (_req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error("Error al obtener comentarios pendientes:", err);
+    console.error('Error al obtener comentarios pendientes:', err);
     res.status(500).json({ success: false });
   }
 });
 
-app.post("/comentarios", async (req, res) => {
+app.post('/comentarios', async (req, res) => {
   const { propiedad, usuario, contenido } = req.body;
   if (!usuario || !contenido || !propiedad) {
-    return res.status(400).json({ success: false, message: "Faltan datos" });
+    return res.status(400).json({ success: false, message: 'Faltan datos' });
   }
   try {
     await pool.query(
-      `INSERT INTO comentarios (propiedad, usuario, contenido) VALUES ($1, $2, $3)`,
+      'INSERT INTO comentarios (propiedad, usuario, contenido) VALUES ($1,$2,$3)',
       [propiedad, usuario, contenido]
     );
     res.json({ success: true });
   } catch (err) {
-    console.error("Error al guardar comentario:", err);
-    res.status(500).json({ success: false, message: "Error al guardar" });
+    console.error('Error al guardar comentario:', err);
+    res.status(500).json({ success: false, message: 'Error al guardar' });
   }
 });
 
-app.get("/comentarios", async (req, res) => {
-  const propiedad = req.query.propiedad;
-  if (!propiedad) return res.status(400).json({ success: false, message: "Propiedad no especificada" });
-  try {
-    const result = await pool.query(`
-      SELECT * FROM comentarios
-      WHERE propiedad = $1 AND estado = 'aprobado'
-      ORDER BY fecha DESC
-    `, [propiedad]);
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Error al obtener comentarios:", err);
-    res.status(500).json({ success: false, message: "Error al obtener" });
-  }
-});
-
-// === Perfil público ===
-app.post("/api/actualizar-perfil", async (req, res) => {
+// Perfil público: actualizar
+app.post('/api/actualizar-perfil', async (req, res) => {
   const { original, nuevoUsuario, nuevaDescripcion } = req.body;
   if (!original || !nuevoUsuario) {
-    return res.status(400).json({ success: false, message: "Faltan datos" });
+    return res.status(400).json({ success: false, message: 'Faltan datos' });
   }
   try {
     const r = await pool.query(
-      `UPDATE usuarios SET usuario = $1, descripcion = $2 WHERE usuario = $3 RETURNING id`,
+      `UPDATE usuarios
+         SET usuario = $1, descripcion = $2
+       WHERE usuario = $3
+       RETURNING id`,
       [nuevoUsuario, nuevaDescripcion || null, original]
     );
-    res.json({ success: r.rowCount > 0 });
+    if (r.rowCount > 0) res.json({ success: true });
+    else res.json({ success: false, message: 'No se actualizó ningún perfil.' });
   } catch (err) {
-    console.error("Error en /api/actualizar-perfil:", err);
-    res.status(500).json({ success: false, message: "Error en la base de datos" });
+    console.error('Error en /api/actualizar-perfil:', err);
+    res.status(500).json({ success: false, message: 'Error en la base de datos' });
   }
 });
 
-// === Favoritos ===
+// Favoritos
 app.post('/api/favoritos', async (req, res) => {
   const { usuario, propiedadId } = req.body;
-  if (!usuario || !propiedadId) return res.status(400).json({ success: false, message: "Faltan datos." });
+  if (!usuario || !propiedadId)
+    return res.status(400).json({ success: false, message: 'Faltan datos.' });
   try {
     const existe = await pool.query(
       'SELECT 1 FROM favoritos WHERE usuario = $1 AND propiedad = $2',
       [usuario, propiedadId]
     );
-    if (existe.rows.length > 0) return res.status(409).json({ success: false, message: "Ya es favorito." });
+    if (existe.rows.length > 0)
+      return res.status(409).json({ success: false, message: 'Ya es favorito.' });
 
-    await pool.query('INSERT INTO favoritos (usuario, propiedad) VALUES ($1, $2)', [usuario, propiedadId]);
-    res.json({ success: true, message: "Añadido a favoritos." });
+    await pool.query(
+      'INSERT INTO favoritos (usuario, propiedad) VALUES ($1, $2)',
+      [usuario, propiedadId]
+    );
+    res.json({ success: true, message: 'Añadido a favoritos.' });
   } catch (err) {
-    console.error("Error añadiendo favorito:", err);
+    console.error('Error añadiendo favorito:', err);
     res.status(500).json({ success: false });
   }
 });
 
 app.delete('/api/favoritos', async (req, res) => {
   const { usuario, propiedadId } = req.body;
-  if (!usuario || !propiedadId) return res.status(400).json({ success: false, message: "Faltan datos." });
+  if (!usuario || !propiedadId)
+    return res.status(400).json({ success: false, message: 'Faltan datos.' });
   try {
-    await pool.query('DELETE FROM favoritos WHERE usuario = $1 AND propiedad = $2', [usuario, propiedadId]);
-    res.json({ success: true, message: "Favorito eliminado." });
+    await pool.query(
+      'DELETE FROM favoritos WHERE usuario = $1 AND propiedad = $2',
+      [usuario, propiedadId]
+    );
+    res.json({ success: true, message: 'Favorito eliminado.' });
   } catch (err) {
-    console.error("Error eliminando favorito:", err);
+    console.error('Error eliminando favorito:', err);
     res.status(500).json({ success: false });
   }
 });
 
 app.get('/api/favoritos/:usuario', async (req, res) => {
   try {
-    const result = await pool.query('SELECT propiedad FROM favoritos WHERE usuario = $1', [req.params.usuario]);
-    res.json(result.rows.map(row => row.propiedad));
+    const result = await pool.query(
+      'SELECT propiedad FROM favoritos WHERE usuario = $1',
+      [req.params.usuario]
+    );
+    res.json(result.rows.map(r => r.propiedad));
   } catch (err) {
-    console.error("Error obteniendo favoritos:", err);
+    console.error('Error obteniendo favoritos:', err);
     res.status(500).json({ success: false });
   }
 });
 
-// === Propiedades ===
+// Propiedades (estático JSON)
 app.get('/api/propiedades/:id', (req, res) => {
   const prop = propiedades.find(p => p.id === req.params.id);
   if (!prop) return res.status(404).json({ success: false });
   res.json(prop);
 });
 
-// === Registro Embajadores ===
+// Embajadores
 app.post('/api/embajadores', async (req, res) => {
   const { email, acepta_privacidad, acepta_terminos } = req.body;
   const ip = req.ip;
   if (!email || !acepta_privacidad || !acepta_terminos) {
-    return res.status(400).json({ error: "Faltan datos o no se aceptaron los términos." });
+    return res.status(400).json({ error: 'Faltan datos o no se aceptaron los términos.' });
   }
   try {
     await pool.query(`
@@ -534,28 +540,26 @@ app.post('/api/embajadores', async (req, res) => {
       VALUES ($1, $1, '', 'Embajador')
       ON CONFLICT (usuario) DO NOTHING
     `, [email]);
-
     const result = await pool.query(`SELECT id FROM usuarios WHERE usuario = $1`, [email]);
     const userId = result.rows[0].id;
-
     await pool.query(`
       INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos, ip_usuario)
-      VALUES ($1, $2, $3, $4)
+      VALUES ($1,$2,$3,$4)
     `, [userId, true, true, ip]);
-
-    res.status(201).json({ message: "Embajador registrado correctamente" });
+    res.status(201).json({ message: 'Embajador registrado correctamente' });
   } catch (error) {
-    console.error("Error al registrar embajador:", error);
-    res.status(500).json({ error: "Error interno del servidor" });
+    console.error('Error al registrar embajador:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
 app.get('/api/admin/embajadores', async (req, res) => {
   const admin = req.query.admin;
-  if (admin !== 'MVI') return res.status(403).json({ error: "Acceso denegado" });
+  if (admin !== 'MVI') return res.status(403).json({ error: 'Acceso denegado' });
   try {
     const result = await pool.query(`
-      SELECT u.email, c.acepta_privacidad, c.acepta_terminos, c.fecha_consentimiento, c.version_politica, c.ip_usuario
+      SELECT u.email, c.acepta_privacidad, c.acepta_terminos,
+             c.fecha_consentimiento, c.version_politica, c.ip_usuario
       FROM usuarios u
       JOIN consentimientos c ON u.id = c.user_id
       WHERE u.tipo = 'Embajador'
@@ -563,20 +567,18 @@ app.get('/api/admin/embajadores', async (req, res) => {
     `);
     res.json({ success: true, datos: result.rows });
   } catch (err) {
-    console.error("Error al obtener embajadores:", err);
-    res.status(500).json({ success: false, error: "Error interno del servidor" });
+    console.error('Error al obtener embajadores:', err);
+    res.status(500).json({ success: false, error: 'Error interno del servidor' });
   }
 });
 
-// ===========================
-// Comunidad (API)
-// ===========================
-const communityRouter = express.Router();
-
-// Ping para comprobar que existe el router (evita confusión con 404)
+// ========= Comunidad =========
+// Ping para pruebas rápidas
 app.get('/api/community', (_req, res) => res.json({ ok: true }));
 
-// Resolver usuario: JWT o cabecera X-Username
+const communityRouter = express.Router();
+
+// Resolver usuario (JWT o X-Username)
 communityRouter.use(async (req, res, next) => {
   try {
     if (req.usuario && req.usuario.id) {
@@ -603,20 +605,20 @@ const validCats = new Set(['Opinión', 'Análisis', 'Pregunta', 'Noticias']);
 const sanitizeCategoria = (c = 'Opinión') => validCats.has(c) ? c : 'Opinión';
 const isPoll = (payload) => Array.isArray(payload);
 
-// ------- GET /me
+// Me
 communityRouter.get('/me', (req, res) => {
   if (!req._authedUser) return res.json(null);
   res.json({ id: req._authedUser.id, username: req._authedUser.usuario });
 });
 
-// ------- GET /posts
+// Listado
 communityRouter.get('/posts', async (req, res) => {
   try {
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
-    const q      = (req.query.q || '').trim();
-    const cats   = (req.query.cats || '').split(',').filter(Boolean);
-    const sort   = (req.query.sort || 'recientes');
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
+    const q = (req.query.q || '').trim();
+    const cats = (req.query.cats || '').split(',').filter(Boolean);
+    const sort = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
@@ -634,18 +636,19 @@ communityRouter.get('/posts', async (req, res) => {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes')       orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
 
     const sql = `
-      SELECT p.id, p.autor, p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
+      SELECT p.id,
+             COALESCE(p.autor, u.usuario) AS autor,
+             p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
              COALESCE(lk.cnt,0) AS likes,
              COALESCE(cm.cnt,0) AS comentarios
       FROM community_posts p
-      LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_likes GROUP BY post_id) lk
-        ON lk.post_id = p.id
-      LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_comments GROUP BY post_id) cm
-        ON cm.post_id = p.id
+      JOIN usuarios u ON u.id = p.user_id
+      LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_likes GROUP BY post_id) lk ON lk.post_id = p.id
+      LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_comments GROUP BY post_id) cm ON cm.post_id = p.id
       ${whereSql}
       ${orderSql}
       OFFSET $${i++} LIMIT $${i++};
@@ -678,21 +681,22 @@ communityRouter.get('/posts', async (req, res) => {
 
     res.json({ items, total: count.rows[0].total });
   } catch (e) {
-    console.error('GET /api/community/posts', e);
-    res.status(500).json({
-      error: 'server_error',
-      detail: process.env.NODE_ENV === 'production' ? undefined : String(e.message || e)
-    });
+    console.error('GET /api/community/posts error:', e);
+    res.status(500).json({ error: 'server_error' });
   }
 });
 
-// ------- GET /posts/:id
+// Detalle
 communityRouter.get('/posts/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const r = await pool.query(
-      `SELECT id, user_id, autor, categoria, titulo, contenido, tipo, created_at
-       FROM community_posts WHERE id=$1`, [id]
+      `SELECT p.id, p.user_id, COALESCE(p.autor, u.usuario) AS autor,
+              p.categoria, p.titulo, p.contenido, p.tipo, p.created_at
+         FROM community_posts p
+         JOIN usuarios u ON u.id = p.user_id
+        WHERE p.id = $1`,
+      [id]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     const p = r.rows[0];
@@ -704,50 +708,44 @@ communityRouter.get('/posts/:id', async (req, res) => {
       ]);
       const map = new Map(votes.rows.map(v => [v.option_idx, v.cnt]));
       return res.json({
-        id: p.id,
-        autor: p.autor,
-        categoria: p.categoria,
-        titulo: p.titulo,
+        id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
         tipo: 'encuesta',
         opciones: opts.rows.map(o => o.texto),
         votos: opts.rows.map(o => map.get(o.idx) || 0),
         created_at: p.created_at
       });
     }
+
     res.json({
-      id: p.id,
-      autor: p.autor,
-      categoria: p.categoria,
-      titulo: p.titulo,
-      contenido: p.contenido?.text || '',
-      tipo: 'post',
-      created_at: p.created_at
+      id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
+      contenido: p.contenido?.text || '', tipo: 'post', created_at: p.created_at
     });
   } catch (e) {
-    console.error('GET /api/community/posts/:id', e);
+    console.error('GET /api/community/posts/:id error:', e);
     res.status(500).json({ error: 'server_error' });
   }
 });
 
-// ------- GET /posts/:id/comments
+// Comentarios del post (listado)
 communityRouter.get('/posts/:id/comments', async (req, res) => {
   const { id } = req.params;
   try {
     const r = await pool.query(
       `SELECT c.id, c.contenido, c.created_at, u.usuario AS autor
-       FROM community_comments c
-       JOIN usuarios u ON u.id = c.user_id
-       WHERE c.post_id = $1
-       ORDER BY c.created_at ASC`, [id]
+         FROM community_comments c
+         JOIN usuarios u ON u.id = c.user_id
+        WHERE c.post_id = $1
+        ORDER BY c.created_at ASC`,
+      [id]
     );
     res.json(r.rows);
   } catch (e) {
-    console.error('GET /api/community/posts/:id/comments', e);
+    console.error('GET /api/community/posts/:id/comments error:', e);
     res.status(500).json({ error: 'server_error' });
   }
 });
 
-// ------- POST /posts
+// Crear post
 communityRouter.post('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
@@ -761,9 +759,8 @@ communityRouter.post('/posts', async (req, res) => {
 
     let jsonContenido;
     if (tipo === 'encuesta') {
-      if (!Array.isArray(contenido) || contenido.length < 2) {
+      if (!Array.isArray(contenido) || contenido.length < 2)
         return res.status(400).json({ error: 'poll_requires_options' });
-      }
       jsonContenido = JSON.stringify(contenido);
     } else {
       jsonContenido = JSON.stringify({ text: String(contenido || '') });
@@ -785,27 +782,25 @@ communityRouter.post('/posts', async (req, res) => {
         values.push(`($${j++}, $${j++}, $${j++})`);
         params.push(post.id, idx, texto);
       });
-      await pool.query(
-        `INSERT INTO community_poll_options (post_id, idx, texto) VALUES ${values.join(',')}`,
-        params
-      );
+      await pool.query(`INSERT INTO community_poll_options (post_id, idx, texto) VALUES ${values.join(',')}`, params);
       return res.status(201).json({
         id: post.id, autor: post.autor, categoria: post.categoria, titulo: post.titulo,
         tipo: 'encuesta', opciones: contenido, votos: [], created_at: post.created_at
       });
     }
-    return res.status(201).json({
+
+    res.status(201).json({
       id: post.id, autor: post.autor, categoria: post.categoria, titulo: post.titulo,
-      contenido: (post.contenido?.text) || JSON.parse(jsonContenido).text,
+      contenido: post.contenido?.text || JSON.parse(jsonContenido).text,
       tipo: 'post', created_at: post.created_at
     });
   } catch (e) {
-    console.error('POST /api/community/posts', e);
+    console.error('POST /api/community/posts error:', e);
     res.status(500).json({ error: 'server_error' });
   }
 });
 
-// ------- POST /posts/:id/like
+// Like toggle
 communityRouter.post('/posts/:id/like', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
@@ -843,14 +838,14 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
     res.json({ liked, likes: count.rows[0].likes });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('POST /api/community/posts/:id/like', e);
+    console.error('POST /api/community/posts/:id/like error:', e);
     res.status(500).json({ error: 'server_error' });
   } finally {
     client.release();
   }
 });
 
-// ------- POST /posts/:id/comments
+// Comentar
 communityRouter.post('/posts/:id/comments', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
@@ -883,14 +878,14 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
     res.status(201).json({ ok: true, id: ins.rows[0].id, created_at: ins.rows[0].created_at });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('POST /api/community/posts/:id/comments', e);
+    console.error('POST /api/community/posts/:id/comments error:', e);
     res.status(500).json({ error: 'server_error' });
   } finally {
     client.release();
   }
 });
 
-// ------- POST /posts/:id/vote
+// Votar encuesta
 communityRouter.post('/posts/:id/vote', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
@@ -929,39 +924,36 @@ communityRouter.post('/posts/:id/vote', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('POST /api/community/posts/:id/vote', e);
+    console.error('POST /api/community/posts/:id/vote error:', e);
     res.status(500).json({ error: 'server_error' });
   } finally {
     client.release();
   }
 });
 
-// ------- GET /notifications
+// Notificaciones
 communityRouter.get('/notifications', async (req, res) => {
   if (!req._authedUser) return res.json([]);
   try {
     const r = await pool.query(
       `SELECT id, titulo, mensaje, read, created_at
-       FROM community_notifications
-       WHERE user_id=$1
-       ORDER BY created_at DESC
-       LIMIT 50`,
+         FROM community_notifications
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 50`,
       [req._authedUser.id]
     );
     res.json(r.rows);
   } catch (e) {
-    console.error('GET /api/community/notifications', e);
+    console.error('GET /api/community/notifications error:', e);
     res.status(500).json({ error: 'server_error' });
   }
 });
 
-// Monta el router
 app.use('/api/community', communityRouter);
 
-// === Home / health ===
-app.get('/', (_req, res) => res.send("Backend MVI activo"));
-
-// === Iniciar servidor ===
+// ========= Raíz / Arranque =========
+app.get('/', (_req, res) => res.send('Backend MVI activo'));
 app.listen(PORT, () => {
   console.log(`✅ Servidor iniciado en http://localhost:${PORT}`);
 });
