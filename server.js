@@ -167,38 +167,27 @@ async function runMigrations() {
          AND u.usuario = p.autor;
     `);
 
-    // 4) contenido a JSONB si estaba como TEXT
+    // 4) Forzar contenido -> JSONB si aún no es JSON/JSONB
     await pool.query(`
       DO $$
+      DECLARE
+        v_data_type text;
       BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name='community_posts' AND column_name='contenido' AND data_type='text'
-        ) THEN
-          BEGIN
+        SELECT data_type INTO v_data_type
+        FROM information_schema.columns
+        WHERE table_name = 'community_posts' AND column_name = 'contenido';
+
+        -- Si no es json ni jsonb, lo migramos a jsonb envolviendo en {"text": ...}
+        IF v_data_type IS NOT NULL AND v_data_type NOT IN ('json', 'jsonb') THEN
+          EXECUTE $sql$
             ALTER TABLE community_posts
-            ALTER COLUMN contenido TYPE JSONB USING
-              CASE
-                WHEN contenido ~ '^\\s*\\{' THEN contenido::jsonb
-                WHEN contenido ~ '^\\s*\\[' THEN contenido::jsonb
-                ELSE jsonb_build_object(''text'', contenido)
-              END;
-          EXCEPTION WHEN others THEN
-            -- Si algún valor de texto no es JSON válido, lo envolvemos
-            UPDATE community_posts
-               SET contenido = jsonb_build_object(''text'', contenido::text)
-             WHERE jsonb_typeof(contenido::jsonb) IS NULL; -- no estrictamente necesario
-            ALTER TABLE community_posts
-            ALTER COLUMN contenido TYPE JSONB USING
-              CASE
-                WHEN contenido ~ '^\\s*\\{' THEN contenido::jsonb
-                WHEN contenido ~ '^\\s*\\[' THEN contenido::jsonb
-                ELSE jsonb_build_object(''text'', contenido)
-              END;
-          END;
+            ALTER COLUMN contenido TYPE jsonb
+            USING jsonb_build_object('text', contenido::text)
+          $sql$;
         END IF;
       END$$;
     `);
+
 
     // 5) Asegurar FK de user_id → usuarios(id) si no existe
     await pool.query(`
@@ -720,10 +709,10 @@ communityRouter.get('/me', (req, res) => {
 communityRouter.get('/posts', async (req, res) => {
   try {
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
-    const q      = (req.query.q || '').trim();
-    const cats   = (req.query.cats || '').split(',').filter(Boolean);
-    const sort   = (req.query.sort || 'recientes');
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
+    const q = (req.query.q || '').trim();
+    const cats = (req.query.cats || '').split(',').filter(Boolean);
+    const sort = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
@@ -741,7 +730,7 @@ communityRouter.get('/posts', async (req, res) => {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes')       orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
 
     const sql = `
@@ -815,7 +804,7 @@ communityRouter.get('/posts/:id', async (req, res) => {
         id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
         tipo: 'encuesta',
         opciones: opts.rows.map(o => o.texto),
-        votos:    opts.rows.map(o => map.get(o.idx) || 0),
+        votos: opts.rows.map(o => map.get(o.idx) || 0),
         created_at: p.created_at
       });
     }
