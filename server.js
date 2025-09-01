@@ -95,8 +95,7 @@ async function runMigrations() {
       );
     `);
 
-    // ---- Comunidad: tabla principal (crea si no existe)
-    // Usamos gen_random_uuid() si existe; si no, uuid_generate_v4()
+    // ---- Comunidad: tabla principal
     await pool.query(`
       DO $$
       BEGIN
@@ -104,7 +103,6 @@ async function runMigrations() {
           EXECUTE '
             CREATE TABLE community_posts (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              -- user_id puede no estar al principio en DB antiguas, por eso lo añadimos abajo idempotente
               user_id INTEGER,
               autor   TEXT,
               categoria TEXT NOT NULL CHECK (categoria IN (''Opinión'',''Análisis'',''Pregunta'',''Noticias'')),
@@ -116,7 +114,6 @@ async function runMigrations() {
           ';
         END IF;
       EXCEPTION WHEN undefined_function THEN
-        -- gen_random_uuid no existe; usamos uuid_generate_v4()
         IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='community_posts') THEN
           EXECUTE '
             CREATE TABLE community_posts (
@@ -135,8 +132,6 @@ async function runMigrations() {
     `);
 
     // ---- Migraciones idempotentes para community_posts
-
-    // 1) Asegurar columnas clave
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS user_id INTEGER;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS autor   TEXT;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS tipo    TEXT DEFAULT 'post';`);
@@ -144,7 +139,6 @@ async function runMigrations() {
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS categoria TEXT;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
 
-    // 2) Si existe columna vieja autor_id -> copiar a user_id (no borramos autor_id para no romper nada)
     await pool.query(`
       DO $$
       BEGIN
@@ -157,7 +151,6 @@ async function runMigrations() {
       END$$;
     `);
 
-    // 3) Si hay filas con user_id NULL pero autor coincide con usuarios.usuario → completar
     await pool.query(`
       UPDATE community_posts p
          SET user_id = u.id
@@ -167,40 +160,24 @@ async function runMigrations() {
          AND u.usuario = p.autor;
     `);
 
-    // 4) contenido a JSONB si estaba como TEXT
     await pool.query(`
       DO $$
+      DECLARE
+        v_data_type text;
       BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name='community_posts' AND column_name='contenido' AND data_type='text'
-        ) THEN
-          BEGIN
+        SELECT data_type INTO v_data_type
+        FROM information_schema.columns
+        WHERE table_name = 'community_posts' AND column_name = 'contenido';
+        IF v_data_type IS NOT NULL AND v_data_type NOT IN ('json', 'jsonb') THEN
+          EXECUTE $sql$
             ALTER TABLE community_posts
-            ALTER COLUMN contenido TYPE JSONB USING
-              CASE
-                WHEN contenido ~ '^\\s*\\{' THEN contenido::jsonb
-                WHEN contenido ~ '^\\s*\\[' THEN contenido::jsonb
-                ELSE jsonb_build_object(''text'', contenido)
-              END;
-          EXCEPTION WHEN others THEN
-            -- Si algún valor de texto no es JSON válido, lo envolvemos
-            UPDATE community_posts
-               SET contenido = jsonb_build_object(''text'', contenido::text)
-             WHERE jsonb_typeof(contenido::jsonb) IS NULL; -- no estrictamente necesario
-            ALTER TABLE community_posts
-            ALTER COLUMN contenido TYPE JSONB USING
-              CASE
-                WHEN contenido ~ '^\\s*\\{' THEN contenido::jsonb
-                WHEN contenido ~ '^\\s*\\[' THEN contenido::jsonb
-                ELSE jsonb_build_object(''text'', contenido)
-              END;
-          END;
+            ALTER COLUMN contenido TYPE jsonb
+            USING jsonb_build_object('text', contenido::text)
+          $sql$;
         END IF;
       END$$;
     `);
 
-    // 5) Asegurar FK de user_id → usuarios(id) si no existe
     await pool.query(`
       DO $$
       BEGIN
@@ -217,7 +194,6 @@ async function runMigrations() {
       END$$;
     `);
 
-    // 6) Rellenar 'autor' desde usuarios si está NULL
     await pool.query(`
       UPDATE community_posts p
          SET autor = u.usuario
@@ -226,7 +202,6 @@ async function runMigrations() {
          AND p.user_id = u.id;
     `);
 
-    // ---- Resto de tablas de comunidad (idempotentes)
     await pool.query(`
       DO $$
       BEGIN
@@ -333,7 +308,6 @@ async function runMigrations() {
       END$$;
     `);
 
-    // ---- Índices útiles
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_created_at ON community_posts (created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_categoria  ON community_posts (categoria);`);
 
@@ -343,9 +317,7 @@ async function runMigrations() {
     throw err;
   }
 }
-
-// Ejecutar migraciones al arrancar
-runMigrations().catch(() => { /* ya logueado arriba */ });
+runMigrations().catch(() => { /* log arriba */ });
 
 // =========================
 // Helpers Auth
@@ -370,13 +342,9 @@ function verificarToken(req, res, next) {
 // =========================
 // Rutas varias (registro/login/etc.)
 // =========================
-
-// Salud
 app.get('/healthz', (_, res) => res.json({ ok: true }));
-
 app.get('/', (_, res) => res.send('Backend MVI activo'));
 
-// Consentimientos (admin)
 app.get('/admin/consentimientos', verificarToken, verificarAdminMVI, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -392,7 +360,6 @@ app.get('/admin/consentimientos', verificarToken, verificarAdminMVI, async (req,
   }
 });
 
-// Registro
 app.post('/register', async (req, res) => {
   const { usuario, email, password, acepta_privacidad, acepta_terminos } = req.body;
   const ip = req.ip;
@@ -426,7 +393,6 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Login
 app.post('/login', async (req, res) => {
   const { usuario, password } = req.body;
   try {
@@ -450,7 +416,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Consentimientos: comprobar último
+// Consentimientos
 app.get('/api/consentimientos/:usuario', async (req, res) => {
   const { usuario } = req.params;
   try {
@@ -470,7 +436,6 @@ app.get('/api/consentimientos/:usuario', async (req, res) => {
   }
 });
 
-// Guardar consentimiento explícito
 app.post('/api/consentimientos', async (req, res) => {
   const { usuario, acepta_privacidad, acepta_terminos } = req.body;
   try {
@@ -716,14 +681,15 @@ communityRouter.get('/me', (req, res) => {
   res.json({ id: req._authedUser.id, username: req._authedUser.usuario });
 });
 
-// GET /posts
+// GET /posts (con liked_by_me)
 communityRouter.get('/posts', async (req, res) => {
   try {
+    const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
-    const q      = (req.query.q || '').trim();
-    const cats   = (req.query.cats || '').split(',').filter(Boolean);
-    const sort   = (req.query.sort || 'recientes');
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
+    const q = (req.query.q || '').trim();
+    const cats = (req.query.cats || '').split(',').filter(Boolean);
+    const sort = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
@@ -741,19 +707,28 @@ communityRouter.get('/posts', async (req, res) => {
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes')       orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
+
+    // JOIN para saber si el usuario actual dio like
+    let meJoin = 'LEFT JOIN LATERAL (SELECT NULL::INT AS user_id) me ON TRUE';
+    if (me) {
+      meJoin = `LEFT JOIN community_likes me ON me.post_id = p.id AND me.user_id = $${i++}`;
+      params.push(me.id);
+    }
 
     const sql = `
       SELECT p.id,
              COALESCE(p.autor, u.usuario) AS autor,
              p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
              COALESCE(lk.cnt,0) AS likes,
-             COALESCE(cm.cnt,0) AS comentarios
+             COALESCE(cm.cnt,0) AS comentarios,
+             ${me ? 'CASE WHEN me.user_id IS NULL THEN false ELSE true END' : 'false'} AS liked_by_me
         FROM community_posts p
    LEFT JOIN usuarios u ON u.id = p.user_id
    LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_likes GROUP BY post_id) lk ON lk.post_id = p.id
    LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_comments GROUP BY post_id) cm ON cm.post_id = p.id
+        ${meJoin}
         ${whereSql}
         ${orderSql}
        OFFSET $${i++} LIMIT $${i++};
@@ -776,6 +751,7 @@ communityRouter.get('/posts', async (req, res) => {
         tipo: r.tipo,
         likes: r.likes,
         comentariosCount: r.comentarios,
+        likedByMe: !!r.liked_by_me,
         created_at: r.created_at
       };
       if (r.tipo === 'encuesta' || isPoll(r.contenido)) {
@@ -791,9 +767,10 @@ communityRouter.get('/posts', async (req, res) => {
   }
 });
 
-// GET /posts/:id
+// GET /posts/:id (con likes, comentariosCount y likedByMe)
 communityRouter.get('/posts/:id', async (req, res) => {
   const { id } = req.params;
+  const me = req._authedUser;
   try {
     const r = await pool.query(
       `SELECT p.id, p.user_id, COALESCE(p.autor, u.usuario) AS autor,
@@ -805,6 +782,15 @@ communityRouter.get('/posts/:id', async (req, res) => {
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     const p = r.rows[0];
 
+    const [likesRow, cmRow, likedMeRow] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::INT AS c FROM community_likes WHERE post_id=$1`, [id]),
+      pool.query(`SELECT COUNT(*)::INT AS c FROM community_comments WHERE post_id=$1`, [id]),
+      me ? pool.query(`SELECT 1 FROM community_likes WHERE post_id=$1 AND user_id=$2`, [id, me.id]) : Promise.resolve({ rowCount: 0 })
+    ]);
+    const likes = likesRow.rows[0].c;
+    const comentariosCount = cmRow.rows[0].c;
+    const likedByMe = !!(likedMeRow.rowCount);
+
     if (p.tipo === 'encuesta' || isPoll(p.contenido)) {
       const [opts, votes] = await Promise.all([
         pool.query(`SELECT idx, texto FROM community_poll_options WHERE post_id=$1 ORDER BY idx ASC`, [id]),
@@ -815,13 +801,15 @@ communityRouter.get('/posts/:id', async (req, res) => {
         id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
         tipo: 'encuesta',
         opciones: opts.rows.map(o => o.texto),
-        votos:    opts.rows.map(o => map.get(o.idx) || 0),
-        created_at: p.created_at
+        votos: opts.rows.map(o => map.get(o.idx) || 0),
+        created_at: p.created_at,
+        likes, comentariosCount, likedByMe
       });
     }
     res.json({
       id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
-      contenido: p.contenido?.text || '', tipo: 'post', created_at: p.created_at
+      contenido: p.contenido?.text || '', tipo: 'post', created_at: p.created_at,
+      likes, comentariosCount, likedByMe
     });
   } catch (e) {
     console.error('GET /api/community/posts/:id', e);
@@ -1056,10 +1044,23 @@ communityRouter.get('/notifications', async (req, res) => {
   }
 });
 
+// POST /notifications/read (marcar como leídas)
+communityRouter.post('/notifications/read', async (req, res) => {
+  if (!req._authedUser) return res.status(401).json({ error: 'auth_required' });
+  try {
+    await pool.query(
+      `UPDATE community_notifications SET read = TRUE WHERE user_id = $1 AND read = FALSE`,
+      [req._authedUser.id]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/community/notifications/read', e);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 app.use('/api/community', communityRouter);
 
-// =========================
-// Iniciar servidor
 // =========================
 app.listen(PORT, () => {
   console.log(`✅ Servidor iniciado en http://localhost:${PORT}`);
