@@ -20,8 +20,6 @@ const pool = new Pool({
 });
 
 // =========================
-// Middleware
-// =========================
 app.use(cors({
   origin: true,
   credentials: true,
@@ -36,11 +34,9 @@ app.use(express.json());
 // =========================
 async function runMigrations() {
   try {
-    // Extensiones de UUID (preferimos pgcrypto)
     await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
-    // ---- Tablas base
     await pool.query(`
       CREATE TABLE IF NOT EXISTS usuarios (
         id SERIAL PRIMARY KEY,
@@ -95,7 +91,7 @@ async function runMigrations() {
       );
     `);
 
-    // ---- Comunidad: tabla principal
+    // ---- Comunidad
     await pool.query(`
       DO $$
       BEGIN
@@ -131,7 +127,6 @@ async function runMigrations() {
       END$$;
     `);
 
-    // ---- Migraciones idempotentes para community_posts
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS user_id INTEGER;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS autor   TEXT;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS tipo    TEXT DEFAULT 'post';`);
@@ -317,7 +312,7 @@ async function runMigrations() {
     throw err;
   }
 }
-runMigrations().catch(() => { /* log arriba */ });
+runMigrations().catch(() => {});
 
 // =========================
 // Helpers Auth
@@ -343,7 +338,7 @@ function verificarToken(req, res, next) {
 // Rutas varias (registro/login/etc.)
 // =========================
 app.get('/healthz', (_, res) => res.json({ ok: true }));
-app.get('/', (_, res) => res.send('Backend MVI activo'));
+app.get('/',   (_, res) => res.send('Backend MVI activo'));
 
 app.get('/admin/consentimientos', verificarToken, verificarAdminMVI, async (req, res) => {
   try {
@@ -681,65 +676,74 @@ communityRouter.get('/me', (req, res) => {
   res.json({ id: req._authedUser.id, username: req._authedUser.usuario });
 });
 
-// GET /posts (con liked_by_me)
+// GET /posts (robusto y con liked_by_me via EXISTS)
 communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
-    const q = (req.query.q || '').trim();
-    const cats = (req.query.cats || '').split(',').filter(Boolean);
-    const sort = (req.query.sort || 'recientes');
+    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
+    const q      = (req.query.q || '').trim();
+    const cats   = (req.query.cats || '').split(',').filter(Boolean);
+    const sort   = (req.query.sort || 'recientes');
 
+    // WHERE dinámico y sus parámetros (sirven también para COUNT)
     const where = [];
-    const params = [];
-    let i = 1;
+    const whereParams = [];
+    let idx = 1;
 
     if (cats.length) {
-      where.push(`p.categoria = ANY($${i++}::text[])`);
-      params.push(cats);
+      where.push(`p.categoria = ANY($${idx++}::text[])`);
+      whereParams.push(cats);
     }
     if (q) {
-      where.push(`(p.titulo ILIKE $${i} OR (p.contenido->>'text') ILIKE $${i})`);
-      params.push(`%${q}%`);
-      i++;
+      where.push(`(p.titulo ILIKE $${idx} OR (p.contenido->>'text') ILIKE $${idx})`);
+      whereParams.push(`%${q}%`);
+      idx++;
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    // ORDER BY
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
+    if (sort === 'likes')       orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
 
-    // JOIN para saber si el usuario actual dio like
-    let meJoin = 'LEFT JOIN LATERAL (SELECT NULL::INT AS user_id) me ON TRUE';
-    if (me) {
-      meJoin = `LEFT JOIN community_likes me ON me.post_id = p.id AND me.user_id = $${i++}`;
-      params.push(me.id);
-    }
+    // Campo liked_by_me con EXISTS(...) usando placeholder justo después de los del WHERE
+    const likedByMeSelect = me
+      ? `EXISTS (
+           SELECT 1
+             FROM community_likes cl
+            WHERE cl.post_id = p.id AND cl.user_id = $${idx}
+         ) AS liked_by_me`
+      : `false AS liked_by_me`;
 
-    const sql = `
+    // SELECT principal
+    const listSql = `
       SELECT p.id,
              COALESCE(p.autor, u.usuario) AS autor,
              p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
              COALESCE(lk.cnt,0) AS likes,
              COALESCE(cm.cnt,0) AS comentarios,
-             ${me ? 'CASE WHEN me.user_id IS NULL THEN false ELSE true END' : 'false'} AS liked_by_me
+             ${likedByMeSelect}
         FROM community_posts p
    LEFT JOIN usuarios u ON u.id = p.user_id
    LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_likes GROUP BY post_id) lk ON lk.post_id = p.id
    LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_comments GROUP BY post_id) cm ON cm.post_id = p.id
-        ${meJoin}
         ${whereSql}
         ${orderSql}
-       OFFSET $${i++} LIMIT $${i++};
+       OFFSET $${me ? idx + 1 : idx} LIMIT $${me ? idx + 2 : idx + 1};
     `;
-    params.push(offset, limit);
 
+    // Parámetros del SELECT: WHERE..., (me.id si aplica), offset, limit
+    const listParams = [...whereParams];
+    if (me) listParams.push(me.id);
+    listParams.push(offset, limit);
+
+    // COUNT: solo usa los parámetros del WHERE
     const countSql = `SELECT COUNT(*)::INT AS total FROM community_posts p ${whereSql};`;
 
     const [list, count] = await Promise.all([
-      pool.query(sql, params),
-      pool.query(countSql, params.slice(0, params.length - 2))
+      pool.query(listSql, listParams),
+      pool.query(countSql, whereParams)
     ]);
 
     const items = list.rows.map(r => {
@@ -754,7 +758,7 @@ communityRouter.get('/posts', async (req, res) => {
         likedByMe: !!r.liked_by_me,
         created_at: r.created_at
       };
-      if (r.tipo === 'encuesta' || isPoll(r.contenido)) {
+      if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
         return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
       }
       return { ...base, contenido: r.contenido?.text || '' };
@@ -791,7 +795,7 @@ communityRouter.get('/posts/:id', async (req, res) => {
     const comentariosCount = cmRow.rows[0].c;
     const likedByMe = !!(likedMeRow.rowCount);
 
-    if (p.tipo === 'encuesta' || isPoll(p.contenido)) {
+    if (p.tipo === 'encuesta' || Array.isArray(p.contenido)) {
       const [opts, votes] = await Promise.all([
         pool.query(`SELECT idx, texto FROM community_poll_options WHERE post_id=$1 ORDER BY idx ASC`, [id]),
         pool.query(`SELECT option_idx, COUNT(*)::INT AS cnt FROM community_poll_votes WHERE post_id=$1 GROUP BY option_idx ORDER BY option_idx ASC`, [id])
@@ -1044,7 +1048,7 @@ communityRouter.get('/notifications', async (req, res) => {
   }
 });
 
-// POST /notifications/read (marcar como leídas)
+// POST /notifications/read
 communityRouter.post('/notifications/read', async (req, res) => {
   if (!req._authedUser) return res.status(401).json({ error: 'auth_required' });
   try {
