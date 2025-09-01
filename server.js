@@ -317,6 +317,20 @@ async function runMigrations() {
       );
     `);
 
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE table_name='admin_embajadores'
+            AND constraint_type='UNIQUE'
+            AND constraint_name='admin_embajadores_email_key'
+        ) THEN
+          ALTER TABLE admin_embajadores ADD CONSTRAINT admin_embajadores_email_key UNIQUE (email);
+        END IF;
+      END $$;
+    `);
+
+
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_created_at ON community_posts (created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_categoria  ON community_posts (categoria);`);
 
@@ -326,7 +340,7 @@ async function runMigrations() {
     throw err;
   }
 }
-runMigrations().catch(() => {});
+runMigrations().catch(() => { });
 
 // =========================
 // Helpers Auth
@@ -352,7 +366,7 @@ function verificarToken(req, res, next) {
 // Rutas misceláneas
 // =========================
 app.get('/healthz', (_, res) => res.json({ ok: true }));
-app.get('/',   (_, res) => res.send('Backend MVI activo'));
+app.get('/', (_, res) => res.send('Backend MVI activo'));
 
 // =========================
 // Admin (consentimientos)
@@ -663,10 +677,10 @@ communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
-    const q      = (req.query.q || '').trim();
-    const cats   = (req.query.cats || '').split(',').filter(Boolean);
-    const sort   = (req.query.sort || 'recientes');
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
+    const q = (req.query.q || '').trim();
+    const cats = (req.query.cats || '').split(',').filter(Boolean);
+    const sort = (req.query.sort || 'recientes');
 
     // WHERE dinámico y sus parámetros (sirven también para COUNT)
     const where = [];
@@ -686,7 +700,7 @@ communityRouter.get('/posts', async (req, res) => {
 
     // ORDER BY
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes')       orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
 
     // Campo liked_by_me con EXISTS(...) usando placeholder justo después de los del WHERE
@@ -1084,6 +1098,33 @@ communityRouter.post('/notifications/read', async (req, res) => {
 });
 
 app.use('/api/community', communityRouter);
+
+// ===== Registro PÚBLICO de embajadores =====
+app.post('/api/embajadores', async (req, res) => {
+  try {
+    const { nombre, email, pais } = req.body || {};
+    if (!nombre || !email) {
+      return res.status(400).json({ success: false, message: 'Faltan nombre o email' });
+    }
+    const r = await pool.query(
+      `INSERT INTO admin_embajadores (nombre, email, pais)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, nombre, email, pais, alta_at`,
+      [nombre, email, pais || null]
+    );
+
+    if (!r.rows.length) {
+      // Email ya existente → lo tratamos como “ok” con flag de duplicado
+      return res.status(200).json({ success: true, duplicated: true, message: 'Ya registrado', email });
+    }
+    res.status(201).json({ success: true, item: r.rows[0] });
+  } catch (e) {
+    console.error('POST /api/embajadores', e);
+    res.status(500).json({ success: false, message: 'Error al registrar embajador' });
+  }
+});
+
 
 // =========================
 // Start
