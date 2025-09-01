@@ -924,6 +924,45 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
   }
 });
 
+// ====== ALIAS ADMIN SEGUROS PARA MODERACIÓN DE COMENTARIOS ======
+// GET pendientes
+app.get('/api/admin/comments/pendientes', async (_, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE estado='pendiente'
+      ORDER BY fecha ASC
+    `);
+    res.json(r.rows);
+  } catch (e) {
+    console.error('Error al obtener comentarios pendientes:', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+// PUT aprobar
+app.put('/api/admin/comments/:id/aprobar', async (req, res) => {
+  try {
+    await pool.query(`UPDATE comentarios SET estado='aprobado' WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Error al aprobar comentario:', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+// DELETE rechazar
+app.delete('/api/admin/comments/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM comentarios WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Error al eliminar comentario:', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+
 // POST /posts/:id/comments
 communityRouter.post('/posts/:id/comments', async (req, res) => {
   const me = req._authedUser;
