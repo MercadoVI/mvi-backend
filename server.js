@@ -1097,6 +1097,108 @@ communityRouter.post('/notifications/read', async (req, res) => {
   }
 });
 
+// =========================
+// Opiniones por activo — ENDPOINTS LEGADOS (compat con tu front)
+// Tabla: comentarios (id, propiedad, usuario, contenido, fecha, estado)
+// =========================
+
+// GET /comentarios?propiedad=HM-ESP  -> solo aprobados, orden desc
+app.get("/comentarios", async (req, res) => {
+  const propiedad = req.query.propiedad;
+  if (!propiedad) {
+    return res.status(400).json({ success: false, message: "Propiedad no especificada" });
+  }
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE propiedad = $1 AND estado = 'aprobado'
+      ORDER BY fecha DESC
+    `, [propiedad]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios:", err);
+    res.status(500).json({ success: false, message: "Error al obtener" });
+  }
+});
+
+// POST /comentarios  { propiedad, usuario, contenido } -> crea 'pendiente'
+app.post("/comentarios", async (req, res) => {
+  const { propiedad, usuario, contenido } = req.body || {};
+  if (!usuario || !contenido || !propiedad) {
+    return res.status(400).json({ success: false, message: "Faltan datos" });
+  }
+  try {
+    await pool.query(`
+      INSERT INTO comentarios (propiedad, usuario, contenido)
+      VALUES ($1, $2, $3)
+    `, [propiedad, usuario, contenido]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al guardar comentario:", err);
+    res.status(500).json({ success: false, message: "Error al guardar" });
+  }
+});
+
+// GET /comentarios/pendientes  -> revisión (pendientes, asc)
+app.get("/comentarios/pendientes", async (_req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE estado = 'pendiente'
+      ORDER BY fecha ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios pendientes:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// PUT /comentarios/:id/aprobar  -> pasa a 'aprobado'
+app.put("/comentarios/:id/aprobar", async (req, res) => {
+  const id = req.params.id;
+  try {
+    await pool.query(`
+      UPDATE comentarios
+         SET estado = 'aprobado'
+       WHERE id = $1
+    `, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al aprobar comentario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// DELETE /comentarios/:id  -> elimina
+app.delete("/comentarios/:id", async (req, res) => {
+  const id = req.params.id;
+  try {
+    await pool.query(`DELETE FROM comentarios WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error al eliminar comentario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+// GET /comentarios/usuario/:usuario  -> historial aprobados del usuario
+app.get("/comentarios/usuario/:usuario", async (req, res) => {
+  const { usuario } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT * FROM comentarios
+      WHERE usuario = $1 AND estado = 'aprobado'
+      ORDER BY fecha DESC
+    `, [usuario]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error al obtener comentarios del usuario:", err);
+    res.status(500).json({ success: false });
+  }
+});
+
+
 app.use('/api/community', communityRouter);
 
 // ===== Registro PÚBLICO de embajadores =====
