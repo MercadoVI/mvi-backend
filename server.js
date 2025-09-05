@@ -11,6 +11,10 @@ const propiedades = require('./propiedades.json');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ===== UUID helpers (validación defensiva) =====
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ensureUuid = (v) => UUID_RE.test(String(v));
+
 // =========================
 // DB
 // =========================
@@ -770,7 +774,7 @@ communityRouter.get('/posts', async (req, res) => {
 // GET /posts/:id (con likes, comentariosCount y likedByMe)
 communityRouter.get('/posts/:id', async (req, res) => {
   const { id } = req.params;
-  const me = req._authedUser;
+  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });  const me = req._authedUser;
   try {
     const r = await pool.query(
       `SELECT p.id, p.user_id, COALESCE(p.autor, u.usuario) AS autor,
@@ -820,7 +824,7 @@ communityRouter.get('/posts/:id', async (req, res) => {
 // GET /posts/:id/comments
 communityRouter.get('/posts/:id/comments', async (req, res) => {
   const { id } = req.params;
-  try {
+  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });  try {
     const r = await pool.query(
       `SELECT c.id, c.contenido, c.created_at, u.usuario AS autor
          FROM community_comments c
@@ -898,6 +902,7 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const { id } = req.params;
+  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
 
   const client = await pool.connect();
   try {
@@ -983,7 +988,8 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const { id } = req.params;
-  const { contenido } = req.body;
+  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
+    const { contenido } = req.body;
   if (!contenido || !String(contenido).trim()) {
     return res.status(400).json({ error: 'empty_comment' });
   }
@@ -1024,7 +1030,7 @@ communityRouter.post('/posts/:id/vote', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const { id } = req.params;
-  const { option } = req.body;
+  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
   const optIdx = parseInt(option, 10);
   if (!Number.isInteger(optIdx) || optIdx < 0) {
     return res.status(400).json({ error: 'invalid_option' });
