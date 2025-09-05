@@ -342,55 +342,46 @@ async function runMigrations() {
 
     // ⬇️ pega esto después de crear las tablas de comunidad (likes/comments/polls) y antes del console.log final
     await pool.query(`
-      DO $$
-      DECLARE cname text;
-      BEGIN
-  
-        SELECT conname INTO cname FROM pg_constraint
-          WHERE conrelid = 'community_likes'::regclass AND contype='f' LIMIT 1;
-        IF cname IS NOT NULL THEN
-          EXECUTE format('ALTER TABLE community_likes DROP CONSTRAINT %I', cname);
-        END IF;
-        PERFORM 1 FROM information_schema.columns
-          WHERE table_name='community_likes' AND column_name='post_id' AND data_type!='text';
-        IF FOUND THEN
-          ALTER TABLE community_likes ALTER COLUMN post_id TYPE text USING post_id::text;
-        END IF;
+     -- 🔧 Normalización: asegurar post_id como TEXT en tablas hijas y quitar FKs legados
+DO $$
+DECLARE r record;
+BEGIN
+  -- 1) Drop todos los FKs sobre post_id en tablas hijas (si existen)
+  FOR r IN
+    SELECT c.conname,
+           format('%I', t.relname) AS tbl
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+    WHERE c.contype = 'f'
+      AND a.attname = 'post_id'
+      AND t.relname IN ('community_likes','community_comments','community_poll_options','community_poll_votes')
+  LOOP
+    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
+  END LOOP;
 
-        SELECT conname INTO cname FROM pg_constraint
-          WHERE conrelid = 'community_comments'::regclass AND contype='f' LIMIT 1;
-        IF cname IS NOT NULL THEN
-          EXECUTE format('ALTER TABLE community_comments DROP CONSTRAINT %I', cname);
-        END IF;
-        PERFORM 1 FROM information_schema.columns
-          WHERE table_name='community_comments' AND column_name='post_id' AND data_type!='text';
-        IF FOUND THEN
-          ALTER TABLE community_comments ALTER COLUMN post_id TYPE text USING post_id::text;
-        END IF;
+  -- 2) Forzar post_id -> TEXT sólo si aún no es TEXT
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_likes' AND column_name='post_id' AND data_type <> 'text') THEN
+    ALTER TABLE community_likes       ALTER COLUMN post_id TYPE text USING post_id::text;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_comments' AND column_name='post_id' AND data_type <> 'text') THEN
+    ALTER TABLE community_comments    ALTER COLUMN post_id TYPE text USING post_id::text;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_options' AND column_name='post_id' AND data_type <> 'text') THEN
+    ALTER TABLE community_poll_options ALTER COLUMN post_id TYPE text USING post_id::text;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_votes' AND column_name='post_id' AND data_type <> 'text') THEN
+    ALTER TABLE community_poll_votes  ALTER COLUMN post_id TYPE text USING post_id::text;
+  END IF;
+END$$;
 
-        SELECT conname INTO cname FROM pg_constraint
-          WHERE conrelid = 'community_poll_options'::regclass AND contype='f' LIMIT 1;
-        IF cname IS NOT NULL THEN
-          EXECUTE format('ALTER TABLE community_poll_options DROP CONSTRAINT %I', cname);
-        END IF;
-        PERFORM 1 FROM information_schema.columns
-          WHERE table_name='community_poll_options' AND column_name='post_id' AND data_type!='text';
-        IF FOUND THEN
-          ALTER TABLE community_poll_options ALTER COLUMN post_id TYPE text USING post_id::text;
-        END IF;
+-- 3) Índice único anti-duplicados en likes
+CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
 
-        SELECT conname INTO cname FROM pg_constraint
-          WHERE conrelid = 'community_poll_votes'::regclass AND contype='f' LIMIT 1;
-        IF cname IS NOT NULL THEN
-          EXECUTE format('ALTER TABLE community_poll_votes DROP CONSTRAINT %I', cname);
-        END IF;
-        PERFORM 1 FROM information_schema.columns
-          WHERE table_name='community_poll_votes' AND column_name='post_id' AND data_type!='text';
-        IF FOUND THEN
-          ALTER TABLE community_poll_votes ALTER COLUMN post_id TYPE text USING post_id::text;
-        END IF;
-      END$$;
-      `);
+-- 4) Índices útiles para rendimiento (opcional pero recomendable)
+CREATE INDEX IF NOT EXISTS ix_comments_post ON community_comments(post_id);
+CREATE INDEX IF NOT EXISTS ix_likes_post    ON community_likes(post_id);
+ `);
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
