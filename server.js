@@ -937,44 +937,93 @@ communityRouter.post('/posts', async (req, res) => {
 });
 
 // POST /posts/:id/like (toggle)
+// POST /posts/:id/like (toggle)
 communityRouter.post('/posts/:id/like', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
-  const id = String(req.params.id);
+
+  const id = String(req.params.id); // puede ser "3" o un UUID
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Verificar que el post existe (por id::text)
-    const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id::text=$1`, [id]);
+    // Verifica que el post exista (id::text)
+    const p = await client.query(
+      `SELECT user_id, titulo FROM community_posts WHERE id::text = $1`,
+      [id]
+    );
     if (!p.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'not_found' });
     }
 
+    // Asegura que community_likes.post_id sea TEXT (y sin FK colgando).
+    // Esto evita 22P02/42804 si alguien dejó la columna en uuid.
+    await client.query(`
+      DO $$
+      DECLARE dtype text;
+      BEGIN
+        SELECT data_type INTO dtype
+        FROM information_schema.columns
+        WHERE table_name='community_likes' AND column_name='post_id';
+
+        IF dtype IS DISTINCT FROM 'text' THEN
+          -- suelta cualquier FK sobre post_id
+          PERFORM 1 FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum = ANY(c.conkey)
+           WHERE c.contype='f' AND t.relname='community_likes' AND a.attname='post_id';
+          IF FOUND THEN
+            EXECUTE (
+              SELECT format('ALTER TABLE community_likes DROP CONSTRAINT %I', c.conname)
+              FROM pg_constraint c
+              JOIN pg_class t ON t.oid=c.conrelid
+              JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum = ANY(c.conkey)
+              WHERE c.contype='f' AND t.relname='community_likes' AND a.attname='post_id'
+              LIMIT 1
+            );
+          END IF;
+
+          -- cambia a TEXT
+          EXECUTE 'ALTER TABLE community_likes ALTER COLUMN post_id TYPE text USING post_id::text';
+        END IF;
+      END$$;
+    `);
+
+    // Toggle
     const has = await client.query(
-      `SELECT 1 FROM community_likes WHERE post_id=$1 AND user_id=$2`, [id, me.id]
+      `SELECT 1 FROM community_likes WHERE post_id = $1 AND user_id = $2`,
+      [id, me.id]
     );
+
     let liked = false;
     if (has.rowCount) {
-      await client.query(`DELETE FROM community_likes WHERE post_id=$1 AND user_id=$2`, [id, me.id]);
+      await client.query(
+        `DELETE FROM community_likes WHERE post_id = $1 AND user_id = $2`,
+        [id, me.id]
+      );
     } else {
-      await client.query(`INSERT INTO community_likes (post_id, user_id) VALUES ($1,$2)`, [id, me.id]);
+      await client.query(
+        `INSERT INTO community_likes (post_id, user_id) VALUES ($1, $2)`,
+        [id, me.id]
+      );
       liked = true;
 
-      const targetUserId = p.rows?.[0]?.user_id || null;
+      // Notifica al dueño del post (si no soy yo)
+      const targetUserId = p.rows[0].user_id || null;
       if (targetUserId && targetUserId !== me.id) {
         await client.query(
           `INSERT INTO community_notifications (user_id, titulo, mensaje)
-           VALUES ($1,$2,$3)`,
+           VALUES ($1, $2, $3)`,
           [targetUserId, 'Nuevo “me gusta”', `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`]
         );
       }
     }
 
     const count = await client.query(
-      `SELECT COUNT(*)::INT AS likes FROM community_likes WHERE post_id=$1`, [id]
+      `SELECT COUNT(*)::int AS likes FROM community_likes WHERE post_id = $1`,
+      [id]
     );
 
     await client.query('COMMIT');
@@ -1120,13 +1169,14 @@ communityRouter.post('/posts/:id/vote', async (req, res) => {
 });
 
 // GET /notifications
+// GET /notifications
 communityRouter.get('/notifications', async (req, res) => {
   if (!req._authedUser) return res.json([]);
   try {
     const r = await pool.query(
-      `SELECT id, titulo, mensaje, read, created_at
+      `SELECT id, titulo, mensaje, "read" AS read, created_at
          FROM community_notifications
-        WHERE user_id=$1
+        WHERE user_id = $1
         ORDER BY created_at DESC
         LIMIT 50`,
       [req._authedUser.id]
@@ -1143,7 +1193,10 @@ communityRouter.post('/notifications/read', async (req, res) => {
   if (!req._authedUser) return res.status(401).json({ error: 'auth_required' });
   try {
     await pool.query(
-      `UPDATE community_notifications SET read = TRUE WHERE user_id = $1 AND read = FALSE`,
+      `UPDATE community_notifications
+          SET "read" = TRUE
+        WHERE user_id = $1
+          AND "read" = FALSE`,
       [req._authedUser.id]
     );
     res.json({ ok: true });
@@ -1152,6 +1205,7 @@ communityRouter.post('/notifications/read', async (req, res) => {
     res.status(500).json({ error: 'server_error' });
   }
 });
+
 
 // =========================
 // Opiniones por activo — ENDPOINTS LEGADOS (compat con tu front)
