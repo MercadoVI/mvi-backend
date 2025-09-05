@@ -387,6 +387,74 @@ CREATE INDEX IF NOT EXISTS ix_likes_post    ON community_likes(post_id);
       CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
     `);
 
+// 🔧 Normalización de community_notifications (soportar esquemas antiguos)
+await pool.query(`
+DO $$
+BEGIN
+  -- titulo
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='community_notifications' AND column_name='titulo'
+  ) THEN
+    ALTER TABLE community_notifications ADD COLUMN titulo TEXT;
+    -- poblar desde 'tipo' si existe; si no, valor por defecto
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name='community_notifications' AND column_name='tipo'
+    ) THEN
+      UPDATE community_notifications
+         SET titulo = COALESCE(titulo, tipo::text, 'Notificación');
+    ELSE
+      UPDATE community_notifications
+         SET titulo = COALESCE(titulo, 'Notificación');
+    END IF;
+  END IF;
+
+  -- mensaje
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='community_notifications' AND column_name='mensaje'
+  ) THEN
+    ALTER TABLE community_notifications ADD COLUMN mensaje TEXT;
+    -- intentar migrar desde columnas antiguas comunes
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name='community_notifications' AND column_name='texto'
+    ) THEN
+      UPDATE community_notifications
+         SET mensaje = COALESCE(mensaje, texto::text);
+    ELSIF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name='community_notifications' AND column_name='descripcion'
+    ) THEN
+      UPDATE community_notifications
+         SET mensaje = COALESCE(mensaje, descripcion::text);
+    ELSE
+      UPDATE community_notifications
+         SET mensaje = COALESCE(mensaje, '');
+    END IF;
+  END IF;
+
+  -- "read"
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='community_notifications' AND column_name='read'
+  ) THEN
+    ALTER TABLE community_notifications ADD COLUMN "read" BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
+
+  -- created_at
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='community_notifications' AND column_name='created_at'
+  ) THEN
+    ALTER TABLE community_notifications ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  END IF;
+END$$;
+
+-- Índice útil
+CREATE INDEX IF NOT EXISTS ix_notifs_user ON community_notifications(user_id, "read", created_at DESC);
+`);
 
     console.log('✅ Tablas/migraciones OK.');
   } catch (err) {
