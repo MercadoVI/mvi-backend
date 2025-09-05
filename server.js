@@ -338,6 +338,65 @@ async function runMigrations() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_created_at ON community_posts (created_at DESC);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_cposts_categoria  ON community_posts (categoria);`);
 
+    // ... dentro de async function runMigrations() { ... } en server.js
+
+    // ⬇️ pega esto después de crear las tablas de comunidad (likes/comments/polls) y antes del console.log final
+    await pool.query(`
+      DO $$
+      DECLARE cname text;
+      BEGIN
+  
+        SELECT conname INTO cname FROM pg_constraint
+          WHERE conrelid = 'community_likes'::regclass AND contype='f' LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE community_likes DROP CONSTRAINT %I', cname);
+        END IF;
+        PERFORM 1 FROM information_schema.columns
+          WHERE table_name='community_likes' AND column_name='post_id' AND data_type!='text';
+        IF FOUND THEN
+          ALTER TABLE community_likes ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+
+        SELECT conname INTO cname FROM pg_constraint
+          WHERE conrelid = 'community_comments'::regclass AND contype='f' LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE community_comments DROP CONSTRAINT %I', cname);
+        END IF;
+        PERFORM 1 FROM information_schema.columns
+          WHERE table_name='community_comments' AND column_name='post_id' AND data_type!='text';
+        IF FOUND THEN
+          ALTER TABLE community_comments ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+
+        SELECT conname INTO cname FROM pg_constraint
+          WHERE conrelid = 'community_poll_options'::regclass AND contype='f' LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE community_poll_options DROP CONSTRAINT %I', cname);
+        END IF;
+        PERFORM 1 FROM information_schema.columns
+          WHERE table_name='community_poll_options' AND column_name='post_id' AND data_type!='text';
+        IF FOUND THEN
+          ALTER TABLE community_poll_options ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+
+        SELECT conname INTO cname FROM pg_constraint
+          WHERE conrelid = 'community_poll_votes'::regclass AND contype='f' LIMIT 1;
+        IF cname IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE community_poll_votes DROP CONSTRAINT %I', cname);
+        END IF;
+        PERFORM 1 FROM information_schema.columns
+          WHERE table_name='community_poll_votes' AND column_name='post_id' AND data_type!='text';
+        IF FOUND THEN
+          ALTER TABLE community_poll_votes ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+      END$$;
+      `);
+
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
+    `);
+
+
     console.log('✅ Tablas/migraciones OK.');
   } catch (err) {
     console.error('❌ Error al crear/migrar tablas:', err);
@@ -639,7 +698,7 @@ app.get('/api/propiedades/:id', (req, res) => {
 });
 
 // ===========================
-// Comunidad (API)
+// Comunidad (API) — robusto: ids como texto
 // ===========================
 const communityRouter = express.Router();
 
@@ -668,7 +727,6 @@ communityRouter.use(async (req, res, next) => {
 
 const validCats = new Set(['Opinión', 'Análisis', 'Pregunta', 'Noticias']);
 const sanitizeCategoria = (c = 'Opinión') => validCats.has(c) ? c : 'Opinión';
-const isPoll = (payload) => Array.isArray(payload);
 
 // GET /me
 communityRouter.get('/me', (req, res) => {
@@ -676,7 +734,7 @@ communityRouter.get('/me', (req, res) => {
   res.json({ id: req._authedUser.id, username: req._authedUser.usuario });
 });
 
-// GET /posts (robusto y con liked_by_me via EXISTS)
+// GET /posts (usamos subconsultas sobre p.id::text para contar likes/comentarios)
 communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
@@ -686,64 +744,53 @@ communityRouter.get('/posts', async (req, res) => {
     const cats = (req.query.cats || '').split(',').filter(Boolean);
     const sort = (req.query.sort || 'recientes');
 
-    // WHERE dinámico y sus parámetros (sirven también para COUNT)
     const where = [];
-    const whereParams = [];
-    let idx = 1;
+    const params = [];
+    let i = 1;
 
     if (cats.length) {
-      where.push(`p.categoria = ANY($${idx++}::text[])`);
-      whereParams.push(cats);
+      where.push(`p.categoria = ANY($${i++}::text[])`);
+      params.push(cats);
     }
     if (q) {
-      where.push(`(p.titulo ILIKE $${idx} OR (p.contenido->>'text') ILIKE $${idx})`);
-      whereParams.push(`%${q}%`);
-      idx++;
+      where.push(`(p.titulo ILIKE $${i} OR (p.contenido->>'text') ILIKE $${i})`);
+      params.push(`%${q}%`);
+      i++;
     }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    // ORDER BY
-    let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes') orderSql = 'ORDER BY COALESCE(lk.cnt,0) DESC, p.created_at DESC';
-    if (sort === 'comentarios') orderSql = 'ORDER BY COALESCE(cm.cnt,0) DESC, p.created_at DESC';
-
-    // Campo liked_by_me con EXISTS(...) usando placeholder justo después de los del WHERE
-    const likedByMeSelect = me
-      ? `EXISTS (
-           SELECT 1
-             FROM community_likes cl
-            WHERE cl.post_id = p.id AND cl.user_id = $${idx}
-         ) AS liked_by_me`
+    const likedByMe = me
+      ? `EXISTS (SELECT 1 FROM community_likes cl WHERE cl.post_id = p.id::text AND cl.user_id = $${i}) AS liked_by_me`
       : `false AS liked_by_me`;
 
-    // SELECT principal
+    const likeCountSql = `(SELECT COUNT(*)::INT FROM community_likes cl WHERE cl.post_id = p.id::text) AS likes`;
+    const commCountSql = `(SELECT COUNT(*)::INT FROM community_comments cc WHERE cc.post_id = p.id::text) AS comentarios`;
+
+    let orderSql = 'ORDER BY p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY likes DESC, p.created_at DESC';
+    if (sort === 'comentarios') orderSql = 'ORDER BY comentarios DESC, p.created_at DESC';
+
     const listSql = `
-      SELECT p.id,
-             COALESCE(p.autor, u.usuario) AS autor,
-             p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
-             COALESCE(lk.cnt,0) AS likes,
-             COALESCE(cm.cnt,0) AS comentarios,
-             ${likedByMeSelect}
-        FROM community_posts p
-   LEFT JOIN usuarios u ON u.id = p.user_id
-   LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_likes GROUP BY post_id) lk ON lk.post_id = p.id
-   LEFT JOIN (SELECT post_id, COUNT(*)::INT AS cnt FROM community_comments GROUP BY post_id) cm ON cm.post_id = p.id
-        ${whereSql}
-        ${orderSql}
-       OFFSET $${me ? idx + 1 : idx} LIMIT $${me ? idx + 2 : idx + 1};
+      SELECT
+        p.id, COALESCE(p.autor, u.usuario) AS autor,
+        p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
+        ${likeCountSql}, ${commCountSql},
+        ${likedByMe}
+      FROM community_posts p
+      LEFT JOIN usuarios u ON u.id = p.user_id
+      ${whereSql}
+      ${orderSql}
+      OFFSET $${me ? i + 1 : i} LIMIT $${me ? i + 2 : i + 1};
     `;
 
-    // Parámetros del SELECT: WHERE..., (me.id si aplica), offset, limit
-    const listParams = [...whereParams];
+    const listParams = [...params];
     if (me) listParams.push(me.id);
     listParams.push(offset, limit);
 
-    // COUNT: solo usa los parámetros del WHERE
     const countSql = `SELECT COUNT(*)::INT AS total FROM community_posts p ${whereSql};`;
-
     const [list, count] = await Promise.all([
       pool.query(listSql, listParams),
-      pool.query(countSql, whereParams)
+      pool.query(countSql, params)
     ]);
 
     const items = list.rows.map(r => {
@@ -771,17 +818,18 @@ communityRouter.get('/posts', async (req, res) => {
   }
 });
 
-// GET /posts/:id (con likes, comentariosCount y likedByMe)
+// GET /posts/:id  (id como texto)
 communityRouter.get('/posts/:id', async (req, res) => {
-  const { id } = req.params;
-  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });  const me = req._authedUser;
+  const id = String(req.params.id);
+  const me = req._authedUser;
   try {
     const r = await pool.query(
       `SELECT p.id, p.user_id, COALESCE(p.autor, u.usuario) AS autor,
               p.categoria, p.titulo, p.contenido, p.tipo, p.created_at
          FROM community_posts p
-    LEFT JOIN usuarios u ON u.id = p.user_id
-        WHERE p.id=$1`, [id]
+         LEFT JOIN usuarios u ON u.id = p.user_id
+        WHERE p.id::text=$1
+        LIMIT 1`, [id]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
     const p = r.rows[0];
@@ -823,8 +871,8 @@ communityRouter.get('/posts/:id', async (req, res) => {
 
 // GET /posts/:id/comments
 communityRouter.get('/posts/:id/comments', async (req, res) => {
-  const { id } = req.params;
-  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });  try {
+  const id = String(req.params.id);
+  try {
     const r = await pool.query(
       `SELECT c.id, c.contenido, c.created_at, u.usuario AS autor
          FROM community_comments c
@@ -875,7 +923,7 @@ communityRouter.post('/posts', async (req, res) => {
       let j = 1;
       (JSON.parse(jsonContenido)).forEach((texto, idx) => {
         values.push(`($${j++}, $${j++}, $${j++})`);
-        params.push(post.id, idx, texto);
+        params.push(String(post.id), idx, texto);
       });
       await pool.query(
         `INSERT INTO community_poll_options (post_id, idx, texto) VALUES ${values.join(',')}`,
@@ -901,12 +949,18 @@ communityRouter.post('/posts', async (req, res) => {
 communityRouter.post('/posts/:id/like', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
-  const { id } = req.params;
-  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
+  const id = String(req.params.id);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Verificar que el post existe (por id::text)
+    const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id::text=$1`, [id]);
+    if (!p.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not_found' });
+    }
 
     const has = await client.query(
       `SELECT 1 FROM community_likes WHERE post_id=$1 AND user_id=$2`, [id, me.id]
@@ -918,9 +972,8 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
       await client.query(`INSERT INTO community_likes (post_id, user_id) VALUES ($1,$2)`, [id, me.id]);
       liked = true;
 
-      const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id=$1`, [id]);
       const targetUserId = p.rows?.[0]?.user_id || null;
-      if (p.rowCount && targetUserId && targetUserId !== me.id) {
+      if (targetUserId && targetUserId !== me.id) {
         await client.query(
           `INSERT INTO community_notifications (user_id, titulo, mensaje)
            VALUES ($1,$2,$3)`,
@@ -987,9 +1040,8 @@ app.delete('/api/admin/comments/:id', async (req, res) => {
 communityRouter.post('/posts/:id/comments', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
-  const { id } = req.params;
-  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
-    const { contenido } = req.body;
+  const id = String(req.params.id);
+  const { contenido } = req.body;
   if (!contenido || !String(contenido).trim()) {
     return res.status(400).json({ error: 'empty_comment' });
   }
@@ -998,15 +1050,20 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id::text=$1`, [id]);
+    if (!p.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not_found' });
+    }
+
     const ins = await client.query(
       `INSERT INTO community_comments (post_id, user_id, contenido)
        VALUES ($1,$2,$3) RETURNING id, created_at`,
       [id, me.id, contenido]
     );
 
-    const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id=$1`, [id]);
     const targetUserId = p.rows?.[0]?.user_id || null;
-    if (p.rowCount && targetUserId && targetUserId !== me.id) {
+    if (targetUserId && targetUserId !== me.id) {
       await client.query(
         `INSERT INTO community_notifications (user_id, titulo, mensaje)
          VALUES ($1,$2,$3)`,
@@ -1029,8 +1086,8 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
 communityRouter.post('/posts/:id/vote', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
-  const { id } = req.params;
-  if (!ensureUuid(id)) return res.status(400).json({ error: 'invalid_id' });
+  const id = String(req.params.id);
+  const { option } = req.body;
   const optIdx = parseInt(option, 10);
   if (!Number.isInteger(optIdx) || optIdx < 0) {
     return res.status(400).json({ error: 'invalid_option' });
@@ -1040,7 +1097,7 @@ communityRouter.post('/posts/:id/vote', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const p = await client.query(`SELECT tipo FROM community_posts WHERE id=$1`, [id]);
+    const p = await client.query(`SELECT tipo FROM community_posts WHERE id::text=$1`, [id]);
     if (!p.rowCount || p.rows[0].tipo !== 'encuesta') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'not_a_poll' });
