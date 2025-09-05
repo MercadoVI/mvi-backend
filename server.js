@@ -914,11 +914,12 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
       liked = true;
 
       const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id=$1`, [id]);
-      if (p.rowCount && p.rows[0].user_id !== me.id) {
+      const targetUserId = p.rows?.[0]?.user_id || null;
+      if (p.rowCount && targetUserId && targetUserId !== me.id) {
         await client.query(
           `INSERT INTO community_notifications (user_id, titulo, mensaje)
            VALUES ($1,$2,$3)`,
-          [p.rows[0].user_id, 'Nuevo “me gusta”', `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`]
+          [targetUserId, 'Nuevo “me gusta”', `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`]
         );
       }
     }
@@ -998,11 +999,12 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
     );
 
     const p = await client.query(`SELECT user_id, titulo FROM community_posts WHERE id=$1`, [id]);
-    if (p.rowCount && p.rows[0].user_id !== me.id) {
+    const targetUserId = p.rows?.[0]?.user_id || null;
+    if (p.rowCount && targetUserId && targetUserId !== me.id) {
       await client.query(
         `INSERT INTO community_notifications (user_id, titulo, mensaje)
          VALUES ($1,$2,$3)`,
-        [p.rows[0].user_id, 'Nuevo comentario', `${me.usuario} ha comentado en: ${p.rows[0].titulo}`]
+        [targetUserId, 'Nuevo comentario', `${me.usuario} ha comentado en: ${p.rows[0].titulo}`]
       );
     }
 
