@@ -1274,6 +1274,47 @@ communityRouter.post('/notifications/read', async (req, res) => {
   }
 });
 
+// DELETE /api/community/posts/:id  -> solo el autor (o admin MVI) puede borrar
+communityRouter.delete('/posts/:id', async (req, res) => {
+  const me = req._authedUser;
+  if (!me) return res.status(401).json({ error: 'auth_required' });
+  const id = String(req.params.id);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const owner = await client.query(`SELECT user_id FROM community_posts WHERE id::text=$1`, [id]);
+    if (!owner.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not_found' });
+    }
+
+    const isAdmin = req.usuario && (req.usuario.username === 'MVI');
+    if (owner.rows[0].user_id !== me.id && !isAdmin) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // Limpieza de tablas hijas (post_id es TEXT y sin FK)
+    await client.query(`DELETE FROM community_likes       WHERE post_id=$1`, [id]);
+    await client.query(`DELETE FROM community_comments    WHERE post_id=$1`, [id]);
+    await client.query(`DELETE FROM community_poll_votes  WHERE post_id=$1`, [id]);
+    await client.query(`DELETE FROM community_poll_options WHERE post_id=$1`, [id]);
+    await client.query(`DELETE FROM community_posts       WHERE id::text=$1`, [id]);
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('DELETE /api/community/posts/:id', e);
+    res.status(500).json({ error: 'server_error' });
+  } finally {
+    client.release();
+  }
+});
+
+
 
 // =========================
 // Opiniones por activo — ENDPOINTS LEGADOS (compat con tu front)
@@ -1402,6 +1443,29 @@ app.post('/api/embajadores', async (req, res) => {
   } catch (e) {
     console.error('POST /api/embajadores', e);
     res.status(500).json({ success: false, message: 'Error al registrar embajador' });
+  }
+});
+
+// DELETE /api/my/opiniones/:id  -> solo el dueño de la opinión (o admin MVI)
+app.delete('/api/my/opiniones/:id', async (req, res) => {
+  const id = req.params.id;
+  const headerUser = req.header('X-Username');
+  if (!headerUser) return res.status(401).json({ error: 'auth_required' });
+
+  try {
+    const r = await pool.query(`SELECT usuario FROM comentarios WHERE id=$1`, [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
+
+    const isAdmin = req.usuario && (req.usuario.username === 'MVI');
+    if (r.rows[0].usuario !== headerUser && !isAdmin) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    await pool.query(`DELETE FROM comentarios WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/my/opiniones/:id', e);
+    res.status(500).json({ error: 'server_error' });
   }
 });
 
