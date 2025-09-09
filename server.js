@@ -321,6 +321,35 @@ async function runMigrations() {
       );
     `);
 
+    // 1) Borrar duplicados, conservando la inversión más reciente por (usuario, propiedad)
+await pool.query(`
+  WITH ranked AS (
+    SELECT ctid,
+           row_number() OVER (
+             PARTITION BY usuario, propiedad
+             ORDER BY fecha DESC, id DESC
+           ) AS rn
+    FROM inversiones
+  )
+  DELETE FROM inversiones i
+  USING ranked r
+  WHERE i.ctid = r.ctid AND r.rn > 1;
+`);
+
+// 2) Ahora sí, crear índice único
+await pool.query(`
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = 'public' AND indexname = 'ux_inversion_usuario_prop'
+    ) THEN
+      EXECUTE 'CREATE UNIQUE INDEX ux_inversion_usuario_prop ON inversiones(usuario, propiedad)';
+    END IF;
+  END $$;
+`);
+
+
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS ux_inversion_usuario_prop
       ON inversiones(usuario, propiedad);
@@ -620,10 +649,16 @@ app.post('/api/inversion', async (req, res) => {
   if (!usuario || !propiedad || !cantidad || !divisa)
     return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
   try {
-    await pool.query(
-      'INSERT INTO inversiones (usuario, propiedad, cantidad, divisa) VALUES ($1,$2,$3,$4)',
-      [usuario, propiedad, cantidad, divisa]
-    );
+await pool.query(`
+  INSERT INTO inversiones (usuario, propiedad, cantidad, divisa)
+  VALUES ($1,$2,$3,$4)
+  ON CONFLICT (usuario, propiedad)
+  DO UPDATE SET
+    cantidad = EXCLUDED.cantidad,
+    divisa   = EXCLUDED.divisa,
+    fecha    = now()
+`, [usuario, propiedad, cantidad, divisa]);
+
     res.json({ success: true, message: 'Inversión registrada correctamente.' });
   } catch (e) {
     console.error(e);
