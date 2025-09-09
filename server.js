@@ -141,6 +141,8 @@ async function runMigrations() {
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS categoria TEXT;`);
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
 
+    await pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS cartera_publica BOOLEAN NOT NULL DEFAULT FALSE;`);
+
     await pool.query(`
       DO $$
       BEGIN
@@ -322,7 +324,7 @@ async function runMigrations() {
     `);
 
     // 1) Borrar duplicados, conservando la inversión más reciente por (usuario, propiedad)
-await pool.query(`
+    await pool.query(`
   WITH ranked AS (
     SELECT ctid,
            row_number() OVER (
@@ -336,8 +338,8 @@ await pool.query(`
   WHERE i.ctid = r.ctid AND r.rn > 1;
 `);
 
-// 2) Ahora sí, crear índice único
-await pool.query(`
+    // 2) Ahora sí, crear índice único
+    await pool.query(`
   DO $$
   BEGIN
     IF NOT EXISTS (
@@ -649,7 +651,7 @@ app.post('/api/inversion', async (req, res) => {
   if (!usuario || !propiedad || !cantidad || !divisa)
     return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
   try {
-await pool.query(`
+    await pool.query(`
   INSERT INTO inversiones (usuario, propiedad, cantidad, divisa)
   VALUES ($1,$2,$3,$4)
   ON CONFLICT (usuario, propiedad)
@@ -791,7 +793,7 @@ app.get('/api/favoritos/:usuario', async (req, res) => {
 app.get('/api/activos', (req, res) => {
   const q = String(req.query.q || '').toLowerCase();
   const items = propiedades
-    .filter(p => !q || p.id.toLowerCase().includes(q) || (p.nombre||'').toLowerCase().includes(q))
+    .filter(p => !q || p.id.toLowerCase().includes(q) || (p.nombre || '').toLowerCase().includes(q))
     .map(p => ({
       id: p.id,
       nombre: p.nombre || p.id,
@@ -1593,6 +1595,51 @@ app.delete('/api/my/opiniones/:id', async (req, res) => {
     res.status(500).json({ error: 'server_error' });
   }
 });
+
+app.get('/api/perfil/:usuario', async (req, res) => {
+  const usuario = req.params.usuario;
+  const viewer = req.header('X-Username') || null;
+  try {
+    const u = await pool.query(
+      'SELECT usuario, email, descripcion, cartera_publica FROM usuarios WHERE usuario = $1',
+      [usuario]
+    );
+    if (!u.rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
+
+    const esDueno = viewer && viewer === usuario;
+    const esPublica = !!u.rows[0].cartera_publica;
+
+    let inversiones = [];
+    if (esDueno || esPublica) {
+      const inv = await pool.query(
+        'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
+        [usuario]
+      );
+      inversiones = inv.rows;
+    }
+
+    res.json({ success: true, user: u.rows[0], inversiones });
+  } catch (e) {
+    console.error('GET /api/perfil/:usuario', e);
+    res.status(500).json({ success: false, message: 'Error al recuperar perfil.' });
+  }
+});
+
+app.put('/api/perfil/cartera-privacidad', async (req, res) => {
+  const viewer = req.header('X-Username');
+  const { usuario, publica } = req.body || {};
+  if (!viewer) return res.status(401).json({ success: false, message: 'Auth requerida' });
+  if (!usuario || viewer !== usuario) return res.status(403).json({ success: false, message: 'Solo puedes editar tu perfil' });
+
+  try {
+    await pool.query('UPDATE usuarios SET cartera_publica = $1 WHERE usuario = $2', [!!publica, usuario]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('PUT /api/perfil/cartera-privacidad', e);
+    res.status(500).json({ success: false, message: 'No se pudo actualizar la privacidad' });
+  }
+});
+
 
 
 // =========================
