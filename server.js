@@ -322,6 +322,12 @@ async function runMigrations() {
     `);
 
     await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_inversion_usuario_prop
+      ON inversiones(usuario, propiedad);
+    `);
+
+
+    await pool.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM information_schema.table_constraints
@@ -343,52 +349,52 @@ async function runMigrations() {
     // ⬇️ pega esto después de crear las tablas de comunidad (likes/comments/polls) y antes del console.log final
     await pool.query(`
      -- 🔧 Normalización: asegurar post_id como TEXT en tablas hijas y quitar FKs legados
-DO $$
-DECLARE r record;
-BEGIN
-  -- 1) Drop todos los FKs sobre post_id en tablas hijas (si existen)
-  FOR r IN
-    SELECT c.conname,
-           format('%I', t.relname) AS tbl
-    FROM pg_constraint c
-    JOIN pg_class t ON t.oid = c.conrelid
-    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
-    WHERE c.contype = 'f'
-      AND a.attname = 'post_id'
-      AND t.relname IN ('community_likes','community_comments','community_poll_options','community_poll_votes')
-  LOOP
-    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
-  END LOOP;
+      DO $$
+      DECLARE r record;
+      BEGIN
+        -- 1) Drop todos los FKs sobre post_id en tablas hijas (si existen)
+        FOR r IN
+          SELECT c.conname,
+                format('%I', t.relname) AS tbl
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+          WHERE c.contype = 'f'
+            AND a.attname = 'post_id'
+            AND t.relname IN ('community_likes','community_comments','community_poll_options','community_poll_votes')
+        LOOP
+          EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
+        END LOOP;
 
-  -- 2) Forzar post_id -> TEXT sólo si aún no es TEXT
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_likes' AND column_name='post_id' AND data_type <> 'text') THEN
-    ALTER TABLE community_likes       ALTER COLUMN post_id TYPE text USING post_id::text;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_comments' AND column_name='post_id' AND data_type <> 'text') THEN
-    ALTER TABLE community_comments    ALTER COLUMN post_id TYPE text USING post_id::text;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_options' AND column_name='post_id' AND data_type <> 'text') THEN
-    ALTER TABLE community_poll_options ALTER COLUMN post_id TYPE text USING post_id::text;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_votes' AND column_name='post_id' AND data_type <> 'text') THEN
-    ALTER TABLE community_poll_votes  ALTER COLUMN post_id TYPE text USING post_id::text;
-  END IF;
-END$$;
+        -- 2) Forzar post_id -> TEXT sólo si aún no es TEXT
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_likes' AND column_name='post_id' AND data_type <> 'text') THEN
+          ALTER TABLE community_likes       ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_comments' AND column_name='post_id' AND data_type <> 'text') THEN
+          ALTER TABLE community_comments    ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_options' AND column_name='post_id' AND data_type <> 'text') THEN
+          ALTER TABLE community_poll_options ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='community_poll_votes' AND column_name='post_id' AND data_type <> 'text') THEN
+          ALTER TABLE community_poll_votes  ALTER COLUMN post_id TYPE text USING post_id::text;
+        END IF;
+      END$$;
 
--- 3) Índice único anti-duplicados en likes
-CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
+      -- 3) Índice único anti-duplicados en likes
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
 
--- 4) Índices útiles para rendimiento (opcional pero recomendable)
-CREATE INDEX IF NOT EXISTS ix_comments_post ON community_comments(post_id);
-CREATE INDEX IF NOT EXISTS ix_likes_post    ON community_likes(post_id);
- `);
+      -- 4) Índices útiles para rendimiento (opcional pero recomendable)
+      CREATE INDEX IF NOT EXISTS ix_comments_post ON community_comments(post_id);
+      CREATE INDEX IF NOT EXISTS ix_likes_post    ON community_likes(post_id);
+      `);
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
     `);
 
-// 🔧 Normalización de community_notifications (soportar esquemas antiguos)
-await pool.query(`
+    // 🔧 Normalización de community_notifications (soportar esquemas antiguos)
+    await pool.query(`
 DO $$
 BEGIN
   -- titulo
@@ -747,6 +753,90 @@ app.get('/api/favoritos/:usuario', async (req, res) => {
   }
 });
 
+app.get('/api/activos', (req, res) => {
+  const q = String(req.query.q || '').toLowerCase();
+  const items = propiedades
+    .filter(p => !q || p.id.toLowerCase().includes(q) || (p.nombre||'').toLowerCase().includes(q))
+    .map(p => ({
+      id: p.id,
+      nombre: p.nombre || p.id,
+      imagen: p.imagen,
+      rentabilidad: p.rentabilidad,   // % anual
+      plazo: p.plazo,                 // meses (asegúrate de tenerlo en el JSON)
+      link: p.link
+    }));
+  res.json({ items });
+});
+
+// === Cartera de usuario ===
+
+// GET — cartera completa con "join" a propiedades.json
+app.get('/api/cartera/:usuario', async (req, res) => {
+  const usuario = req.params.usuario;
+  try {
+    const r = await pool.query(
+      'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario=$1 ORDER BY fecha DESC',
+      [usuario]
+    );
+    const items = r.rows.map(row => {
+      const info = propiedades.find(p => p.id === row.propiedad) || {};
+      return {
+        id: row.propiedad,
+        cantidad: row.cantidad,
+        divisa: row.divisa,
+        fecha: row.fecha,
+        codigo: row.propiedad,
+        imagen: info.imagen || null,
+        rentabilidad: info.rentabilidad ?? null,
+        plazo: info.plazo ?? null,
+        link: info.link || null,
+        nombre: info.nombre || row.propiedad
+      };
+    });
+    res.json({ items });
+  } catch (e) {
+    console.error('GET /api/cartera', e);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// POST — upsert (crear o actualizar cantidad)
+app.post('/api/cartera', async (req, res) => {
+  const { usuario, propiedadId, cantidad, divisa } = req.body || {};
+  if (!usuario || !propiedadId || !cantidad) {
+    return res.status(400).json({ success: false, message: 'Faltan datos.' });
+  }
+  const _divisa = divisa || 'EUR';
+  try {
+    await pool.query(`
+      INSERT INTO inversiones (usuario, propiedad, cantidad, divisa)
+      VALUES ($1,$2,$3,$4)
+      ON CONFLICT (usuario, propiedad)
+      DO UPDATE SET cantidad = EXCLUDED.cantidad, divisa = EXCLUDED.divisa, fecha = now()
+    `, [usuario, propiedadId, cantidad, _divisa]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('POST /api/cartera', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+// DELETE — quitar un activo de la cartera
+app.delete('/api/cartera', async (req, res) => {
+  const { usuario, propiedadId } = req.body || {};
+  if (!usuario || !propiedadId) {
+    return res.status(400).json({ success: false, message: 'Faltan datos.' });
+  }
+  try {
+    await pool.query('DELETE FROM inversiones WHERE usuario=$1 AND propiedad=$2', [usuario, propiedadId]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('DELETE /api/cartera', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+
 // =========================
 // Propiedades (JSON local)
 // =========================
@@ -757,7 +847,7 @@ app.get('/api/propiedades/:id', (req, res) => {
 });
 
 // ===========================
-// Comunidad (API) — robusto: ids como texto
+//  (API) — robusto: ids como texto
 // ===========================
 const communityRouter = express.Router();
 
