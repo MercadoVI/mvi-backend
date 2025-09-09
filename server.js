@@ -669,25 +669,6 @@ app.post('/api/inversion', async (req, res) => {
 });
 
 // =========================
-// Perfil público
-// =========================
-app.get('/api/perfil/:usuario', async (req, res) => {
-  const usuario = req.params.usuario;
-  try {
-    const u = await pool.query('SELECT usuario, email, descripcion FROM usuarios WHERE usuario = $1', [usuario]);
-    if (!u.rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
-    const inv = await pool.query(
-      'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
-      [usuario]
-    );
-    res.json({ success: true, user: u.rows[0], inversiones: inv.rows });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ success: false, message: 'Error al recuperar perfil.' });
-  }
-});
-
-// =========================
 /* ADMIN dashboards */
 // =========================
 
@@ -810,7 +791,14 @@ app.get('/api/activos', (req, res) => {
 // GET — cartera completa con "join" a propiedades.json
 app.get('/api/cartera/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
+  const viewer  = req.header('X-Username') || null;
   try {
+    const upub = await pool.query('SELECT cartera_publica FROM usuarios WHERE usuario=$1', [usuario]);
+    const esPublica = !!upub.rows?.[0]?.cartera_publica;
+    const esDueno   = viewer === usuario;
+
+    if (!esDueno && !esPublica) return res.json({ items: [] });
+
     const r = await pool.query(
       'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario=$1 ORDER BY fecha DESC',
       [usuario]
@@ -836,6 +824,7 @@ app.get('/api/cartera/:usuario', async (req, res) => {
     res.status(500).json({ error: 'server_error' });
   }
 });
+
 
 // POST — upsert (crear o actualizar cantidad)
 app.post('/api/cartera', async (req, res) => {
