@@ -15,6 +15,18 @@ const PORT = process.env.PORT || 3000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ensureUuid = (v) => UUID_RE.test(String(v));
 
+// Cargar .env en desarrollo; en producción (Render) ya usa process.env
+try { require('dotenv').config(); } catch (e) {
+  console.warn('dotenv no disponible; usando variables del entorno');
+}
+
+const { OAuth2Client } = require('google-auth-library');
+const oauthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// Usa siempre la clave fuerte de JWT desde el entorno
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('Falta JWT_SECRET en variables de entorno');
+
 // =========================
 // DB
 // =========================
@@ -142,6 +154,24 @@ async function runMigrations() {
     await pool.query(`ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
 
     await pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS cartera_publica BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`
+    ALTER TABLE usuarios
+      ADD COLUMN IF NOT EXISTS google_id TEXT UNIQUE,
+      ADD COLUMN IF NOT EXISTS picture TEXT,
+      ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS provider TEXT;
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name='usuarios' AND column_name='password'
+      ) THEN
+        -- permitir cuentas OAuth sin contraseña
+        ALTER TABLE usuarios ALTER COLUMN password DROP NOT NULL;
+      END IF;
+    END$$;
+    `);
 
     await pool.query(`
       DO $$
@@ -514,7 +544,7 @@ function verificarToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Token no proporcionado' });
-  jwt.verify(token, 'CLAVE_SECRETA', (err, decoded) => {
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: 'Token inválido' });
     req.usuario = decoded; // { id, username, tipo }
     next();
@@ -591,8 +621,7 @@ app.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ success: false, message: 'Usuario o contraseña incorrectos.' });
 
-    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, 'CLAVE_SECRETA', { expiresIn: '2h' });
-    res.json({
+    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' }); res.json({
       success: true,
       message: 'Inicio de sesión correcto.',
       token,
@@ -603,6 +632,101 @@ app.post('/login', async (req, res) => {
     res.status(500).json({ success: false, message: 'Error al iniciar sesión.' });
   }
 });
+
+app.post('/auth/google/idtoken', async (req, res) => {
+  try {
+    const { credential, acepta_privacidad, acepta_terminos } = req.body || {};
+    if (!credential) return res.status(400).json({ error: 'missing_credential' });
+
+    // 1) Verificar ID Token con Google
+    const ticket = await oauthClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+    const payload = ticket.getPayload(); // sub, email, email_verified, name, picture...
+    const googleId = payload.sub;
+    const email = String(payload.email || '').toLowerCase();
+    const emailVerified = !!payload.email_verified;
+    const picture = payload.picture || null;
+    const nombre = payload.name || (email ? email.split('@')[0] : `user_${googleId.slice(-6)}`);
+    const username = (nombre || `user_${googleId.slice(-6)}`).replace(/[^a-zA-Z0-9_-]/g,'');
+
+    // 2) Upsert usuario (vincular por email si ya existía)
+    const client = await pool.connect();
+    let user;
+    try {
+      await client.query('BEGIN');
+
+      // 2a) buscar por google_id
+      const byGid = await client.query(`SELECT * FROM usuarios WHERE google_id=$1 LIMIT 1`, [googleId]);
+      user = byGid.rows[0];
+
+      // 2b) si no existe por google_id, intenta por email para vincular cuenta previa
+      if (!user && email) {
+        const byEmail = await client.query(`SELECT * FROM usuarios WHERE LOWER(email)=LOWER($1) LIMIT 1`, [email]);
+        user = byEmail.rows[0];
+        if (user && !user.google_id) {
+          await client.query(`
+            UPDATE usuarios
+               SET google_id=$1, picture=$2, email_verified=$3, provider='google'
+             WHERE id=$4
+          `, [googleId, picture, emailVerified, user.id]);
+          user = (await client.query(`SELECT * FROM usuarios WHERE id=$1`, [user.id])).rows[0];
+        }
+      }
+
+      // 2c) si no existe, crear “Inversor” sin contraseña
+      if (!user) {
+        const ins = await client.query(`
+          INSERT INTO usuarios (usuario, email, password, tipo, descripcion, google_id, picture, email_verified, provider)
+          VALUES ($1,$2,NULL,'Inversor',NULL,$3,$4,$5,'google')
+          RETURNING *;
+        `, [username, email || `${googleId}@noemail.local`, googleId, picture, emailVerified]);
+        user = ins.rows[0];
+
+        // guardar consentimiento si ya viene marcado desde el front
+        if (acepta_privacidad && acepta_terminos) {
+          await client.query(
+            `INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos, ip_usuario)
+             VALUES ($1,$2,$3,$4)`,
+            [user.id, true, true, req.ip]
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('google idtoken error', e);
+      return res.status(500).json({ error: 'server_error' });
+    } finally {
+      client.release();
+    }
+
+    // 3) emitir tu JWT (mismo formato que en /login)
+    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' });
+
+    // 4) comprobar si ya hay consentimiento registrado
+    const cons = await pool.query(`
+      SELECT 1
+        FROM consentimientos c
+       WHERE c.user_id=$1 AND c.acepta_privacidad AND c.acepta_terminos
+       ORDER BY c.fecha_consentimiento DESC
+       LIMIT 1
+    `, [user.id]);
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, usuario: user.usuario, email: user.email, tipo: user.tipo, picture: user.picture },
+      legal_ok: cons.rows.length > 0
+    });
+  } catch (err) {
+    console.error('verifyIdToken', err);
+    res.status(401).json({ error: 'invalid_google_token' });
+  }
+});
+
 
 // =========================
 // Consentimientos
@@ -791,11 +915,11 @@ app.get('/api/activos', (req, res) => {
 // GET — cartera completa con "join" a propiedades.json
 app.get('/api/cartera/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
-  const viewer  = req.header('X-Username') || null;
+  const viewer = req.header('X-Username') || null;
   try {
     const upub = await pool.query('SELECT cartera_publica FROM usuarios WHERE usuario=$1', [usuario]);
     const esPublica = !!upub.rows?.[0]?.cartera_publica;
-    const esDueno   = viewer === usuario;
+    const esDueno = viewer === usuario;
 
     if (!esDueno && !esPublica) return res.json({ items: [] });
 
