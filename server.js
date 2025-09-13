@@ -796,6 +796,37 @@ app.post('/api/inversion', async (req, res) => {
 /* ADMIN dashboards */
 // =========================
 
+// DELETE — eliminar usuario por nombre (solo admin MVI)
+app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
+  try {
+    // Acepta cualquiera de estos mecanismos de “ser admin”:
+    const isAdmin =
+      req.query.admin === 'MVI' ||
+      req.header('X-Username') === 'MVI' ||
+      (req.usuario && req.usuario.username === 'MVI'); // si vienes con Bearer token
+
+    if (!isAdmin) {
+      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
+    }
+
+    const usuario = req.params.usuario;
+    if (!usuario) return res.status(400).json({ success: false, message: 'Falta usuario.' });
+
+    // Borrado en cascada: inversiones, comentarios y favoritos ya referencian al usuario
+    // con ON DELETE CASCADE en tu esquema.
+    const r = await pool.query('DELETE FROM usuarios WHERE usuario = $1 RETURNING usuario', [usuario]);
+
+    if (!r.rowCount) {
+      return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
+    }
+
+    res.json({ success: true, message: `Usuario ${usuario} eliminado.` });
+  } catch (e) {
+    console.error('DELETE /api/admin/usuarios/por-nombre/:usuario', e);
+    res.status(500).json({ success: false, message: 'Error al eliminar usuario.' });
+  }
+});
+
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
 app.get('/api/admin/data', async (req, res) => {
   const admin = req.query.admin;
