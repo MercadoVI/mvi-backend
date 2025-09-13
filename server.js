@@ -672,10 +672,10 @@ app.post('/auth/google/idtoken', async (req, res) => {
     const emailVerified = !!payload.email_verified;
     const picture = payload.picture || null;
     const nombre = payload.name || (email ? email.split('@')[0] : `user_${googleId.slice(-6)}`);
-    const suggested = ( (email && email.split('@')[0]) || nombre || `user_${googleId.slice(-6)}` );
-    const username = await uniqueUsername(client, suggested);
-    // 2) Upsert usuario (vincular por email si ya existía)
+    const suggested = ((email && email.split('@')[0]) || nombre || `user_${googleId.slice(-6)}`);
     const client = await pool.connect();
+    const username = await uniqueUsername(client, suggested);
+
     let user;
     try {
       await client.query('BEGIN');
