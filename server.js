@@ -534,6 +534,29 @@ runMigrations().catch(() => { });
 // =========================
 // Helpers Auth
 // =========================
+// Genera un username único a partir de un nombre base (email/local-part)
+async function uniqueUsername(client, base) {
+  const norm = (base || 'user').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20) || 'user';
+  const exists = async (u) => {
+    const r = await client.query(`SELECT 1 FROM usuarios WHERE usuario=$1 LIMIT 1`, [u]);
+    return r.rowCount > 0;
+  };
+
+  if (!await exists(norm)) return norm;
+
+  // prueba sufijos numéricos
+  for (let i = 1; i <= 50; i++) {
+    const candidate = `${norm}${i}`;
+    if (!await exists(candidate)) return candidate;
+  }
+
+  // fallback aleatorio
+  while (true) {
+    const candidate = `${norm}-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (!await exists(candidate)) return candidate;
+  }
+}
+
 function verificarAdminMVI(req, res, next) {
   const usuario = req.usuario;
   if (usuario && usuario.username === 'MVI') return next();
@@ -649,8 +672,8 @@ app.post('/auth/google/idtoken', async (req, res) => {
     const emailVerified = !!payload.email_verified;
     const picture = payload.picture || null;
     const nombre = payload.name || (email ? email.split('@')[0] : `user_${googleId.slice(-6)}`);
-    const username = (nombre || `user_${googleId.slice(-6)}`).replace(/[^a-zA-Z0-9_-]/g,'');
-
+    const suggested = ( (email && email.split('@')[0]) || nombre || `user_${googleId.slice(-6)}` );
+    const username = await uniqueUsername(client, suggested);
     // 2) Upsert usuario (vincular por email si ya existía)
     const client = await pool.connect();
     let user;
