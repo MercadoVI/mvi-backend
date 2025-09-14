@@ -13,13 +13,6 @@
         "nombre": "Hotel Aurum Barcelona",
         "link":"hab-esp.html"
     },
-        {
-        "id": "PRA-UBS",
-        "imagen": "URBANITAE.jpg",
-        "rentabilidad": "10",
-        "nombre": "Proyecto Residencial Arquerías II",
-        "link":"pra-ube.html"
-    },
     {
         "id": "PRA-UBE",
         "imagen": "URBANITAE.jpg",
