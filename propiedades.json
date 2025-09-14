@@ -14,6 +14,13 @@
         "link":"hab-esp.html"
     },
     {
+        "id": "PRA-UBE",
+        "imagen": "URBANITAE.jpg",
+        "rentabilidad": "10",
+        "nombre": "Proyecto Residencial Arquerías II",
+        "link":"pra-ube"
+    },
+    {
         "id": "HS-FRA",
         "imagen": "sh-fra.webp",
         "rentabilidad": "35.6",
