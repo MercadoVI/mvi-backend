@@ -1140,38 +1140,30 @@ communityRouter.get('/posts', async (req, res) => {
       pool.query(countSql, params)
     ]);
 
-    const items = list.rows.map((r) => {
-      const base = {
-        id: r.id,
-        autor: r.autor,
-        categoria: r.categoria,
-        titulo: r.titulo,
-        tipo: r.tipo,
-        likes: r.likes,
-        comentariosCount: r.comentarios,
-        likedByMe: !!r.liked_by_me,
-        created_at: r.created_at
-      };
+    // ...después de ejecutar listSql y countSql:
+const items = list.rows.map(r => {
+  const base = {
+    id: r.id,
+    autor: r.autor,
+    categoria: r.categoria,
+    titulo: r.titulo,
+    tipo: r.tipo,
+    likes: r.likes,
+    comentariosCount: r.comentarios,
+    likedByMe: !!r.liked_by_me,
+    created_at: r.created_at
+  };
 
-      // Encuestas (contenido puede ser array si migraste así)
-      if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
-        return {
-          ...base,
-          opciones: Array.isArray(r.contenido) ? r.contenido : [],
-          votos: []
-        };
-      }
+  if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
+    return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
+  }
 
-      // Post normal
-      const c = r.contenido || {};
-      return {
-        ...base,
-        contenido: c.text || '',
-        video: c.video || null
-      };
-    });
+  const c = r.contenido || {};
+  return { ...base, contenido: c.text || '', video: c.video || null };
+});
 
-    res.json({ items, total: count.rows[0].total });
+res.json({ items, total: count.rows[0].total });
+
   } catch (e) {
     console.error('GET /api/community/posts', e);
     res.status(500).json({ error: 'server_error' });
