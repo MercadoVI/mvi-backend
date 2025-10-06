@@ -1087,29 +1087,22 @@ communityRouter.get('/me', (req, res) => {
   res.json({ id: req._authedUser.id, username: req._authedUser.usuario });
 });
 
-// GET /posts (usamos subconsultas sobre p.id::text para contar likes/comentarios)
+// GET /posts (ids como texto, cuenta likes/comentarios por subconsultas)
 communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
-    const q = (req.query.q || '').trim();
-    const cats = (req.query.cats || '').split(',').filter(Boolean);
-    const sort = (req.query.sort || 'recientes');
+    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
+    const q      = (req.query.q || '').trim();
+    const cats   = (req.query.cats || '').split(',').filter(Boolean);
+    const sort   = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
     let i = 1;
 
-    if (cats.length) {
-      where.push(`p.categoria = ANY($${i++}::text[])`);
-      params.push(cats);
-    }
-    if (q) {
-      where.push(`(p.titulo ILIKE $${i} OR (p.contenido->>'text') ILIKE $${i})`);
-      params.push(`%${q}%`);
-      i++;
-    }
+    if (cats.length) { where.push(`p.categoria = ANY($${i++}::text[])`); params.push(cats); }
+    if (q) { where.push(`(p.titulo ILIKE $${i} OR (p.contenido->>'text') ILIKE $${i})`); params.push(`%${q}%`); i++; }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const likedByMe = me
@@ -1120,15 +1113,15 @@ communityRouter.get('/posts', async (req, res) => {
     const commCountSql = `(SELECT COUNT(*)::INT FROM community_comments cc WHERE cc.post_id = p.id::text) AS comentarios`;
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes') orderSql = 'ORDER BY likes DESC, p.created_at DESC';
+    if (sort === 'likes')       orderSql = 'ORDER BY likes DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY comentarios DESC, p.created_at DESC';
 
     const listSql = `
       SELECT
-        p.id, COALESCE(p.autor, u.usuario) AS autor,
+        p.id,
+        COALESCE(p.autor, u.usuario) AS autor,
         p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
-        ${likeCountSql}, ${commCountSql},
-        ${likedByMe}
+        ${likeCountSql}, ${commCountSql}, ${likedByMe}
       FROM community_posts p
       LEFT JOIN usuarios u ON u.id = p.user_id
       ${whereSql}
@@ -1141,12 +1134,13 @@ communityRouter.get('/posts', async (req, res) => {
     listParams.push(offset, limit);
 
     const countSql = `SELECT COUNT(*)::INT AS total FROM community_posts p ${whereSql};`;
+
     const [list, count] = await Promise.all([
       pool.query(listSql, listParams),
       pool.query(countSql, params)
     ]);
 
-    const items = list.rows.map(r => {
+    const items = list.rows.map((r) => {
       const base = {
         id: r.id,
         autor: r.autor,
@@ -1158,10 +1152,23 @@ communityRouter.get('/posts', async (req, res) => {
         likedByMe: !!r.liked_by_me,
         created_at: r.created_at
       };
+
+      // Encuestas (contenido puede ser array si migraste así)
       if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
-        return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
+        return {
+          ...base,
+          opciones: Array.isArray(r.contenido) ? r.contenido : [],
+          votos: []
+        };
       }
-      return { ...base, contenido: r.contenido?.text || '' };
+
+      // Post normal
+      const c = r.contenido || {};
+      return {
+        ...base,
+        contenido: c.text || '',
+        video: c.video || null
+      };
     });
 
     res.json({ items, total: count.rows[0].total });
@@ -1212,10 +1219,17 @@ communityRouter.get('/posts/:id', async (req, res) => {
       });
     }
     res.json({
-      id: p.id, autor: p.autor, categoria: p.categoria, titulo: p.titulo,
-      contenido: p.contenido?.text || '', tipo: 'post', created_at: p.created_at,
+      id: p.id,
+      autor: p.autor,
+      categoria: p.categoria,
+      titulo: p.titulo,
+      contenido: p.contenido?.text || '',
+      video: p.contenido?.video || null,
+      tipo: 'post',
+      created_at: p.created_at,
       likes, comentariosCount, likedByMe
     });
+
   } catch (e) {
     console.error('GET /api/community/posts/:id', e);
     res.status(500).json({ error: 'server_error' });
@@ -1246,20 +1260,42 @@ communityRouter.post('/posts', async (req, res) => {
     const me = req._authedUser;
     if (!me) return res.status(401).json({ error: 'auth_required' });
 
-    const { categoria, titulo, contenido, tipo = 'post' } = req.body;
+    const {
+      categoria,
+      titulo,
+      contenido,
+      tipo = 'post',
+      video_url
+    } = req.body || {};
+
     if (!titulo || (tipo === 'post' && !contenido)) {
       return res.status(400).json({ error: 'invalid_payload' });
     }
     const cat = sanitizeCategoria(categoria || 'Opinión');
 
+    // Extraer YouTube ID si llega video_url
+    let video = null;
+    if (video_url) {
+      const url = String(video_url).trim();
+      const YT_ID =
+        url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/)?.[1] ||
+        url.match(/[?&]v=([A-Za-z0-9_-]{11})/)?.[1] ||
+        null;
+      if (YT_ID) video = { provider: 'youtube', id: YT_ID, url };
+    }
+
     let jsonContenido;
     if (tipo === 'encuesta') {
-      if (!Array.isArray(contenido) || contenido.length < 2) {
+      // contenido debe ser un array de opciones
+      if (!Array.isArray(contenido) || !contenido.length) {
         return res.status(400).json({ error: 'poll_requires_options' });
       }
       jsonContenido = JSON.stringify(contenido);
     } else {
-      jsonContenido = JSON.stringify({ text: String(contenido || '') });
+      jsonContenido = JSON.stringify({
+        text: String(contenido || ''),
+        ...(video ? { video } : {})
+      });
     }
 
     const ins = await pool.query(
@@ -1283,14 +1319,28 @@ communityRouter.post('/posts', async (req, res) => {
         params
       );
       return res.status(201).json({
-        id: post.id, autor: post.autor, categoria: post.categoria, titulo: post.titulo,
-        tipo: 'encuesta', opciones: JSON.parse(jsonContenido), votos: [], created_at: post.created_at
+        id: post.id,
+        autor: post.autor,
+        categoria: post.categoria,
+        titulo: post.titulo,
+        tipo: 'encuesta',
+        opciones: JSON.parse(jsonContenido),
+        votos: [],
+        created_at: post.created_at
       });
     }
+
+    // Post normal: devuelve también el vídeo si existe
+    const c = typeof post.contenido === 'object' ? post.contenido : JSON.parse(jsonContenido);
     return res.status(201).json({
-      id: post.id, autor: post.autor, categoria: post.categoria, titulo: post.titulo,
-      contenido: (post.contenido?.text) || JSON.parse(jsonContenido).text,
-      tipo: 'post', created_at: post.created_at
+      id: post.id,
+      autor: post.autor,
+      categoria: post.categoria,
+      titulo: post.titulo,
+      contenido: c.text || '',
+      video: c.video || null,
+      tipo: 'post',
+      created_at: post.created_at
     });
   } catch (e) {
     console.error('POST /api/community/posts', e);
