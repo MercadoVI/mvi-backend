@@ -900,13 +900,17 @@ app.get('/api/usuarios/:usuario/premium', verificarToken, async (req, res) => {
     if (req.usuario.username !== u && req.usuario.username !== 'MVI') {
       return res.status(403).json({ success:false, message:'Solo tu propio perfil' });
     }
-    const r = await pool.query('SELECT premium_months_active, premium_months_pending FROM usuarios WHERE usuario=$1', [u]);
+    const r = await pool.query(
+      'SELECT premium_months_active, premium_months_pending FROM usuarios WHERE usuario=$1',
+      [u]
+    );
     res.json({ success:true, ...r.rows[0] });
   } catch (e) {
     console.error('perfil premium', e);
     res.status(500).json({ success:false, message:'server_error' });
   }
 });
+
 
 
 
