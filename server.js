@@ -801,7 +801,7 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
       await pool.query('INSERT INTO invitaciones_contador(usuario,invitaciones_emitidas,meses_acumulados) VALUES($1,1,0)', [emisor]);
     }
 
-    const linkBase = process.env.PUBLIC_APP_URL || 'http://127.0.0.1:5500';
+    const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
     const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
     res.json({ success:true, codigo, link });
   } catch (e) {
