@@ -1,8 +1,6 @@
 // server.js — Render/Node + PostgreSQL para MVI (Comunidad + Admin)
 
 const express = require('express');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcrypt');
@@ -22,8 +20,6 @@ try { require('dotenv').config(); } catch (e) {
   console.warn('dotenv no disponible; usando variables del entorno');
 }
 
-const loginLimiter = rateLimit({ windowMs: 15*60*1000, max: 20 });
-
 const { OAuth2Client } = require('google-auth-library');
 const oauthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -42,14 +38,12 @@ const pool = new Pool({
 // =========================
 // Middleware
 // =========================
-app.use(helmet({ contentSecurityPolicy: false })); // activa CSP si migras a scripts sin inline
 app.use(cors({
-  origin: ['https://realtyinvestor.eu','https://www.realtyinvestor.eu'],
-  credentials: false,
-  allowedHeaders: ['Content-Type','Authorization'],
-  methods: ['GET','POST','PUT','DELETE','OPTIONS']
+  origin: true,
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Username'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 }));
-
 app.use(express.static(__dirname));
 app.use(express.json());
 
@@ -459,8 +453,8 @@ async function runMigrations() {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
     `);
-    // === PREMIUM & REFERIDOS (migraciones) ===
-    await pool.query(`
+// === PREMIUM & REFERIDOS (migraciones) ===
+await pool.query(`
   ALTER TABLE usuarios
     ADD COLUMN IF NOT EXISTS premium_months_active  INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS premium_months_pending INTEGER NOT NULL DEFAULT 0,
@@ -605,32 +599,6 @@ function verificarToken(req, res, next) {
   });
 }
 
-// --- OPTIONAL TOKEN: NO obliga a llevar token; si viene, lo decodifica ---
-function optionalToken(req, _res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.split(' ')[1];
-  if (!token) return next();
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (!err) req.usuario = decoded; // { id, username, tipo }
-    next();
-  });
-}
-
-
-// --- Insertar aquí: requireAdmin y requireSelf ---
-const requireAdmin = [verificarToken, (req, res, next) => {
-  if (req.usuario && req.usuario.username === 'MVI') return next();
-  return res.status(403).json({ error: 'Solo administrador' });
-}];
-
-const requireSelf = [verificarToken, (req, res, next) => {
-  const bodyUser = req.body?.usuario || req.params?.usuario;
-  if (!bodyUser) return res.status(400).json({ error: 'Falta usuario objetivo' });
-  if (req.usuario.username !== bodyUser && req.usuario.username !== 'MVI') {
-    return res.status(403).json({ error: 'Operación solo permitida para el propio usuario' });
-  }
-  next();
-}];
 
 
 // =========================
@@ -693,7 +661,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-app.post('/login', loginLimiter, async (req, res) => { 
+app.post('/login', async (req, res) => {
   const { usuario, password } = req.body;
   try {
     const result = await pool.query('SELECT * FROM usuarios WHERE usuario = $1', [usuario]);
@@ -819,10 +787,10 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
       [emisor]
     );
     const emitidas = r.rows[0]?.invitaciones_emitidas || 0;
-    if (emitidas >= 6) return res.status(400).json({ success: false, message: 'Máximo 6 invitaciones.' });
+    if (emitidas >= 6) return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
 
-    const rand = Math.random().toString(36).slice(2, 7).toUpperCase();
-    const base = emisor.replace(/\s+/g, '').toUpperCase().slice(0, 12);
+    const rand = Math.random().toString(36).slice(2,7).toUpperCase();
+    const base = emisor.replace(/\s+/g,'').toUpperCase().slice(0,12);
     const codigo = `RI-${base}-${rand}`;
 
     await pool.query(
@@ -837,31 +805,30 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
 
     const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
     const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
-    res.json({ success: true, codigo, link });
+    res.json({ success:true, codigo, link });
   } catch (e) {
     console.error('generar invitación', e);
-    res.status(500).json({ success: false, message: 'server_error' });
+    res.status(500).json({ success:false, message:'server_error' });
   }
 });
 
 // === REFERIDOS: reclamar código (tras registro) ===
 // body: { receptor: "nuevoUsuario", refCode: "RI-..." }
-app.post('/api/invitaciones/reclamar', verificarToken, async (req, res) => {
+app.post('/api/invitaciones/reclamar', async (req, res) => {
   try {
-    const { refCode } = req.body || {};
-    const receptor = req.usuario.username;
-    if (!receptor || !refCode) return res.status(400).json({ success: false, message: 'Datos incompletos.' });
+    const { receptor, refCode } = req.body || {};
+    if (!receptor || !refCode) return res.status(400).json({ success:false, message:'Datos incompletos.' });
 
     const inv = await pool.query('SELECT * FROM invitaciones WHERE codigo=$1', [refCode]);
     const row = inv.rows[0];
-    if (!row) return res.status(404).json({ success: false, message: 'Código no válido.' });
-    if (row.estado !== 'generado') return res.status(400).json({ success: false, message: 'Código ya usado.' });
-    if (row.emisor === receptor) return res.status(400).json({ success: false, message: 'No puedes invitarte a ti mismo.' });
+    if (!row) return res.status(404).json({ success:false, message:'Código no válido.' });
+    if (row.estado !== 'generado') return res.status(400).json({ success:false, message:'Código ya usado.' });
+    if (row.emisor === receptor) return res.status(400).json({ success:false, message:'No puedes invitarte a ti mismo.' });
 
     // Límite receptor: máx. 5 meses acumulables
     const cR = await pool.query('SELECT meses_acumulados FROM invitaciones_contador WHERE usuario=$1', [receptor]);
     const mesesRec = cR.rows[0]?.meses_acumulados || 0;
-    if (mesesRec >= 5) return res.status(400).json({ success: false, message: 'Máximo 5 meses acumulables por invitado.' });
+    if (mesesRec >= 5) return res.status(400).json({ success:false, message:'Máximo 5 meses acumulables por invitado.' });
 
     await pool.query('UPDATE invitaciones SET estado=$1, receptor=$2, reclamado_en=now() WHERE codigo=$3',
       ['reclamado', receptor, refCode]);
@@ -876,22 +843,23 @@ app.post('/api/invitaciones/reclamar', verificarToken, async (req, res) => {
       await pool.query('INSERT INTO invitaciones_contador(usuario,invitaciones_emitidas,meses_acumulados) VALUES($1,0,1)', [receptor]);
     }
 
-    res.json({ success: true, message: 'Invitación reclamada. Meses pendientes añadidos.' });
+    res.json({ success:true, message:'Invitación reclamada. Meses pendientes añadidos.' });
   } catch (e) {
     console.error('reclamar invitación', e);
-    res.status(500).json({ success: false, message: 'server_error' });
+    res.status(500).json({ success:false, message:'server_error' });
   }
 });
 
 // === REFERIDOS: activar (solo admin MVI) ===
 // body: { codigo: "RI-..." }
-app.post('/api/invitaciones/activar', verificarToken, verificarAdminMVI, async (req, res) => {
+app.post('/api/invitaciones/activar', verificarToken, async (req, res) => {
   try {
+    if (req.usuario.username !== 'MVI') return res.status(403).json({ success:false, message:'Solo admin' });
     const { codigo } = req.body || {};
     const inv = await pool.query('SELECT * FROM invitaciones WHERE codigo=$1', [codigo]);
     const row = inv.rows[0];
-    if (!row) return res.status(404).json({ success: false, message: 'No existe la invitación' });
-    if (row.estado !== 'reclamado') return res.status(400).json({ success: false, message: 'La invitación no está reclamada' });
+    if (!row) return res.status(404).json({ success:false, message:'No existe la invitación' });
+    if (row.estado !== 'reclamado') return res.status(400).json({ success:false, message:'La invitación no está reclamada' });
 
     await pool.query('BEGIN');
     await pool.query(
@@ -905,11 +873,11 @@ app.post('/api/invitaciones/activar', verificarToken, verificarAdminMVI, async (
     await pool.query('UPDATE invitaciones SET estado=$1, activado_en=now() WHERE id=$2', ['activado', row.id]);
     await pool.query('COMMIT');
 
-    res.json({ success: true, message: 'Meses activados para emisor y receptor.' });
+    res.json({ success:true, message:'Meses activados para emisor y receptor.' });
   } catch (e) {
-    await pool.query('ROLLBACK').catch(() => { });
+    await pool.query('ROLLBACK').catch(()=>{});
     console.error('activar invitación', e);
-    res.status(500).json({ success: false, message: 'server_error' });
+    res.status(500).json({ success:false, message:'server_error' });
   }
 });
 
@@ -917,13 +885,13 @@ app.post('/api/invitaciones/activar', verificarToken, verificarAdminMVI, async (
 // GET /api/invitaciones/listar?estado=reclamado
 app.get('/api/invitaciones/listar', verificarToken, async (req, res) => {
   try {
-    if (req.usuario.username !== 'MVI') return res.status(403).json({ success: false, message: 'Solo admin' });
+    if (req.usuario.username !== 'MVI') return res.status(403).json({ success:false, message:'Solo admin' });
     const estado = req.query.estado || 'reclamado';
     const r = await pool.query('SELECT * FROM invitaciones WHERE estado=$1 ORDER BY reclamado_en DESC NULLS LAST, creado_en DESC', [estado]);
-    res.json({ success: true, data: r.rows });
+    res.json({ success:true, data:r.rows });
   } catch (e) {
     console.error('listar invitaciones', e);
-    res.status(500).json({ success: false, message: 'server_error' });
+    res.status(500).json({ success:false, message:'server_error' });
   }
 });
 
@@ -932,16 +900,16 @@ app.get('/api/usuarios/:usuario/premium', verificarToken, async (req, res) => {
   try {
     const u = req.params.usuario;
     if (req.usuario.username !== u && req.usuario.username !== 'MVI') {
-      return res.status(403).json({ success: false, message: 'Solo tu propio perfil' });
+      return res.status(403).json({ success:false, message:'Solo tu propio perfil' });
     }
     const r = await pool.query(
       'SELECT premium_months_active, premium_months_pending FROM usuarios WHERE usuario=$1',
       [u]
     );
-    res.json({ success: true, ...r.rows[0] });
+    res.json({ success:true, ...r.rows[0] });
   } catch (e) {
     console.error('perfil premium', e);
-    res.status(500).json({ success: false, message: 'server_error' });
+    res.status(500).json({ success:false, message:'server_error' });
   }
 });
 
@@ -951,11 +919,8 @@ app.get('/api/usuarios/:usuario/premium', verificarToken, async (req, res) => {
 // =========================
 // Consentimientos
 // =========================
-app.get('/api/consentimientos/:usuario', verificarToken, async (req, res) => {
+app.get('/api/consentimientos/:usuario', async (req, res) => {
   const { usuario } = req.params;
-  if (req.usuario.username !== usuario && req.usuario.username !== 'MVI') {
-    return res.status(403).json({ error: 'Solo el propio usuario o admin' });
-  }
   try {
     const result = await pool.query(`
       SELECT c.*
@@ -973,9 +938,8 @@ app.get('/api/consentimientos/:usuario', verificarToken, async (req, res) => {
   }
 });
 
-app.post('/api/consentimientos', verificarToken, async (req, res) => {
-  const { acepta_privacidad, acepta_terminos } = req.body;
-  const usuario = req.usuario.username;
+app.post('/api/consentimientos', async (req, res) => {
+  const { usuario, acepta_privacidad, acepta_terminos } = req.body;
   try {
     const r = await pool.query('SELECT id FROM usuarios WHERE usuario = $1', [usuario]);
     if (!r.rows.length) return res.status(404).json({ error: 'Usuario no encontrado' });
@@ -994,7 +958,7 @@ app.post('/api/consentimientos', verificarToken, async (req, res) => {
 // =========================
 // Inversiones
 // =========================
-app.post('/api/inversion', requireSelf, async (req, res) => {
+app.post('/api/inversion', async (req, res) => {
   const { usuario, propiedad, cantidad, divisa } = req.body;
   if (!usuario || !propiedad || !cantidad || !divisa)
     return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
@@ -1021,11 +985,18 @@ app.post('/api/inversion', requireSelf, async (req, res) => {
 // =========================
 
 // DELETE — eliminar usuario por nombre (solo admin MVI)
-app.delete('/api/admin/usuarios/por-nombre/:usuario', requireAdmin, async (req, res) => {
-  const usuario = req.params.usuario;
-  if (!usuario) return res.status(400).json({ success: false, message: 'Falta usuario.' });
-
+app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
   try {
+    // Acepta cualquiera de estos mecanismos de “ser admin”:
+    const isAdmin =
+      req.query.admin === 'MVI' ||
+      req.header('X-Username') === 'MVI' ||
+      (req.usuario && req.usuario.username === 'MVI'); // si vienes con Bearer token
+
+    if (!isAdmin) {
+      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
+    }
+
     const usuario = req.params.usuario;
     if (!usuario) return res.status(400).json({ success: false, message: 'Falta usuario.' });
 
@@ -1045,8 +1016,9 @@ app.delete('/api/admin/usuarios/por-nombre/:usuario', requireAdmin, async (req, 
 });
 
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
-app.get('/api/admin/data', requireAdmin, async (req, res) => {
-
+app.get('/api/admin/data', async (req, res) => {
+  const admin = req.query.admin;
+  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   try {
     const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
     const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
@@ -1057,8 +1029,9 @@ app.get('/api/admin/data', requireAdmin, async (req, res) => {
 });
 
 // Ruta original (por compatibilidad con tu versión anterior)
-app.get('/api/admin/datos', requireAdmin, async (req, res) => {
-
+app.get('/api/admin/datos', async (req, res) => {
+  const admin = req.query.admin;
+  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   try {
     const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
     const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
@@ -1069,8 +1042,9 @@ app.get('/api/admin/datos', requireAdmin, async (req, res) => {
 });
 
 // Admin: embajadores (para administrador.html)
-app.get('/api/admin/embajadores', requireAdmin, async (req, res) => {
-
+app.get('/api/admin/embajadores', async (req, res) => {
+  const admin = req.query.admin;
+  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   try {
     const r = await pool.query(`SELECT id, nombre, email, pais, alta_at FROM admin_embajadores ORDER BY alta_at DESC, id DESC`);
     res.json({ success: true, items: r.rows });
@@ -1081,8 +1055,9 @@ app.get('/api/admin/embajadores', requireAdmin, async (req, res) => {
 });
 
 // (Opcional) Alta rápida de embajador para pruebas del dashboard
-app.post('/api/admin/embajadores', requireAdmin, async (req, res) => {
-
+app.post('/api/admin/embajadores', async (req, res) => {
+  const admin = req.query.admin || req.body?.admin;
+  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   const { nombre, email, pais } = req.body || {};
   if (!nombre) return res.status(400).json({ success: false, message: 'Falta nombre' });
   try {
@@ -1100,12 +1075,8 @@ app.post('/api/admin/embajadores', requireAdmin, async (req, res) => {
 // =========================
 // Favoritos
 // =========================
-app.post('/api/favoritos', verificarToken, async (req, res) => {
+app.post('/api/favoritos', async (req, res) => {
   const { usuario, propiedadId } = req.body;
-  const isAdmin = req.usuario?.username === 'MVI';
-  if (!isAdmin && req.usuario.username !== usuario) {
-    return res.status(403).json({ success:false, message:'Solo puedes modificar tus favoritos' });
-  }
   if (!usuario || !propiedadId)
     return res.status(400).json({ success: false, message: 'Faltan datos.' });
   try {
@@ -1121,13 +1092,8 @@ app.post('/api/favoritos', verificarToken, async (req, res) => {
     res.status(500).json({ success: false });
   }
 });
-
-app.delete('/api/favoritos', verificarToken, async (req, res) => {
+app.delete('/api/favoritos', async (req, res) => {
   const { usuario, propiedadId } = req.body;
-  const isAdmin = req.usuario?.username === 'MVI';
-  if (!isAdmin && req.usuario.username !== usuario) {
-    return res.status(403).json({ success:false, message:'Solo puedes modificar tus favoritos' });
-  }
   if (!usuario || !propiedadId)
     return res.status(400).json({ success: false, message: 'Faltan datos.' });
   try {
@@ -1138,14 +1104,7 @@ app.delete('/api/favoritos', verificarToken, async (req, res) => {
     res.status(500).json({ success: false });
   }
 });
-app.get('/api/favoritos/:usuario', verificarToken, async (req, res) => {
-  const isAdmin = req.usuario?.username === 'MVI';
-  if (!isAdmin && req.usuario.username !== req.params.usuario) {
-    return res.status(403).json({ success:false, message:'Solo puedes ver tus favoritos' });
-  }
-    if (req.usuario.username !== req.params.usuario && req.usuario.username !== 'MVI') {
-    return res.status(403).json({ success:false, message:'Solo tu lista' });
-  }
+app.get('/api/favoritos/:usuario', async (req, res) => {
   try {
     const r = await pool.query('SELECT propiedad FROM favoritos WHERE usuario=$1', [req.params.usuario]);
     res.json(r.rows.map(x => x.propiedad));
@@ -1173,9 +1132,9 @@ app.get('/api/activos', (req, res) => {
 // === Cartera de usuario ===
 
 // GET — cartera completa con "join" a propiedades.json
-app.get('/api/cartera/:usuario', optionalToken, async (req, res) => {
+app.get('/api/cartera/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
-  const viewer = req.usuario?.username || null;
+  const viewer = req.header('X-Username') || null;
   try {
     const upub = await pool.query('SELECT cartera_publica FROM usuarios WHERE usuario=$1', [usuario]);
     const esPublica = !!upub.rows?.[0]?.cartera_publica;
@@ -1211,7 +1170,7 @@ app.get('/api/cartera/:usuario', optionalToken, async (req, res) => {
 
 
 // POST — upsert (crear o actualizar cantidad)
-app.post('/api/cartera', requireSelf, async (req, res) => {
+app.post('/api/cartera', async (req, res) => {
   const { usuario, propiedadId, cantidad, divisa } = req.body || {};
   if (!usuario || !propiedadId || !cantidad) {
     return res.status(400).json({ success: false, message: 'Faltan datos.' });
@@ -1232,7 +1191,7 @@ app.post('/api/cartera', requireSelf, async (req, res) => {
 });
 
 // DELETE — quitar un activo de la cartera
-app.delete('/api/cartera', requireSelf, async (req, res) => {
+app.delete('/api/cartera', async (req, res) => {
   const { usuario, propiedadId } = req.body || {};
   if (!usuario || !propiedadId) {
     return res.status(400).json({ success: false, message: 'Faltan datos.' });
@@ -1261,16 +1220,28 @@ app.get('/api/propiedades/:id', (req, res) => {
 // ===========================
 const communityRouter = express.Router();
 
-// Resolver usuario: SOLO desde JWT (sin X-Username)
-communityRouter.use((req, _res, next) => {
-  if (req.usuario && req.usuario.id) {
-    req._authedUser = { id: req.usuario.id, usuario: req.usuario.username || req.usuario.usuario };
-  } else {
-    req._authedUser = null; // sin login → público (solo lectura)
+// Resolver usuario: JWT o cabecera X-Username
+communityRouter.use(async (req, res, next) => {
+  try {
+    if (req.usuario && req.usuario.id) {
+      req._authedUser = { id: req.usuario.id, usuario: req.usuario.username || req.usuario.usuario };
+      return next();
+    }
+    const headerUser = req.header('X-Username');
+    if (headerUser) {
+      const r = await pool.query(`SELECT id, usuario FROM usuarios WHERE usuario=$1 LIMIT 1`, [headerUser]);
+      if (r.rows.length) {
+        req._authedUser = { id: r.rows[0].id, usuario: r.rows[0].usuario };
+        return next();
+      }
+    }
+    req._authedUser = null;
+    next();
+  } catch (e) {
+    console.error('resolve community user', e);
+    res.status(500).json({ error: 'auth_failed' });
   }
-  next();
 });
-
 
 const validCats = new Set(['Opinión', 'Análisis', 'Pregunta', 'Noticias']);
 const sanitizeCategoria = (c = 'Opinión') => validCats.has(c) ? c : 'Opinión';
@@ -1286,10 +1257,10 @@ communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
-    const q = (req.query.q || '').trim();
-    const cats = (req.query.cats || '').split(',').filter(Boolean);
-    const sort = (req.query.sort || 'recientes');
+    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
+    const q      = (req.query.q || '').trim();
+    const cats   = (req.query.cats || '').split(',').filter(Boolean);
+    const sort   = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
@@ -1307,7 +1278,7 @@ communityRouter.get('/posts', async (req, res) => {
     const commCountSql = `(SELECT COUNT(*)::INT FROM community_comments cc WHERE cc.post_id = p.id::text) AS comentarios`;
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes') orderSql = 'ORDER BY likes DESC, p.created_at DESC';
+    if (sort === 'likes')       orderSql = 'ORDER BY likes DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY comentarios DESC, p.created_at DESC';
 
     const listSql = `
@@ -1335,28 +1306,28 @@ communityRouter.get('/posts', async (req, res) => {
     ]);
 
     // ...después de ejecutar listSql y countSql:
-    const items = list.rows.map(r => {
-      const base = {
-        id: r.id,
-        autor: r.autor,
-        categoria: r.categoria,
-        titulo: r.titulo,
-        tipo: r.tipo,
-        likes: r.likes,
-        comentariosCount: r.comentarios,
-        likedByMe: !!r.liked_by_me,
-        created_at: r.created_at
-      };
+const items = list.rows.map(r => {
+  const base = {
+    id: r.id,
+    autor: r.autor,
+    categoria: r.categoria,
+    titulo: r.titulo,
+    tipo: r.tipo,
+    likes: r.likes,
+    comentariosCount: r.comentarios,
+    likedByMe: !!r.liked_by_me,
+    created_at: r.created_at
+  };
 
-      if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
-        return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
-      }
+  if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
+    return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
+  }
 
-      const c = r.contenido || {};
-      return { ...base, contenido: c.text || '', video: c.video || null };
-    });
+  const c = r.contenido || {};
+  return { ...base, contenido: c.text || '', video: c.video || null };
+});
 
-    res.json({ items, total: count.rows[0].total });
+res.json({ items, total: count.rows[0].total });
 
   } catch (e) {
     console.error('GET /api/community/posts', e);
@@ -1441,8 +1412,8 @@ communityRouter.get('/posts/:id/comments', async (req, res) => {
 });
 
 // POST /posts
-communityRouter.post('/posts', verificarToken, async (req, res) => {
-    try {
+communityRouter.post('/posts', async (req, res) => {
+  try {
     const me = req._authedUser;
     if (!me) return res.status(401).json({ error: 'auth_required' });
 
@@ -1503,7 +1474,7 @@ communityRouter.post('/posts', verificarToken, async (req, res) => {
 });
 
 // POST /posts/:id/like (toggle)
-communityRouter.post('/posts/:id/like', verificarToken, async (req, res) => {
+communityRouter.post('/posts/:id/like', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
 
@@ -1604,7 +1575,7 @@ communityRouter.post('/posts/:id/like', verificarToken, async (req, res) => {
 
 // ====== ALIAS ADMIN SEGUROS PARA MODERACIÓN DE COMENTARIOS ======
 // GET pendientes
-app.get('/api/admin/comments/pendientes', verificarToken, verificarAdminMVI, async (_, res) => {
+app.get('/api/admin/comments/pendientes', async (_, res) => {
   try {
     const r = await pool.query(`
       SELECT * FROM comentarios
@@ -1619,7 +1590,7 @@ app.get('/api/admin/comments/pendientes', verificarToken, verificarAdminMVI, asy
 });
 
 // PUT aprobar
-app.put('/api/admin/comments/:id/aprobar', verificarToken, verificarAdminMVI, async (req, res) => {
+app.put('/api/admin/comments/:id/aprobar', async (req, res) => {
   try {
     await pool.query(`UPDATE comentarios SET estado='aprobado' WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
@@ -1630,7 +1601,7 @@ app.put('/api/admin/comments/:id/aprobar', verificarToken, verificarAdminMVI, as
 });
 
 // DELETE rechazar
-app.delete('/api/admin/comments/:id', verificarToken, verificarAdminMVI, async (req, res) => {
+app.delete('/api/admin/comments/:id', async (req, res) => {
   try {
     await pool.query('DELETE FROM comentarios WHERE id = $1', [req.params.id]);
     res.json({ success: true });
@@ -1642,7 +1613,7 @@ app.delete('/api/admin/comments/:id', verificarToken, verificarAdminMVI, async (
 
 
 // POST /posts/:id/comments
-communityRouter.post('/posts/:id/comments', verificarToken, async (req, res) => {
+communityRouter.post('/posts/:id/comments', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const id = String(req.params.id);
@@ -1688,7 +1659,7 @@ communityRouter.post('/posts/:id/comments', verificarToken, async (req, res) => 
 });
 
 // POST /posts/:id/vote
-communityRouter.post('/posts/:id/vote', verificarToken, async (req, res) => {
+communityRouter.post('/posts/:id/vote', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const id = String(req.params.id);
@@ -1754,8 +1725,7 @@ communityRouter.get('/notifications', async (req, res) => {
 });
 
 // POST /notifications/read
-communityRouter.post('/notifications/read', verificarToken, async (req, res) => {
-  const me = req._authedUser;
+communityRouter.post('/notifications/read', async (req, res) => {
   if (!req._authedUser) return res.status(401).json({ error: 'auth_required' });
   try {
     await pool.query(
@@ -1773,7 +1743,7 @@ communityRouter.post('/notifications/read', verificarToken, async (req, res) => 
 });
 
 // DELETE /api/community/posts/:id  -> solo el autor (o admin MVI) puede borrar
-communityRouter.delete('/posts/:id', verificarToken, async (req, res) => {
+communityRouter.delete('/posts/:id', async (req, res) => {
   const me = req._authedUser;
   if (!me) return res.status(401).json({ error: 'auth_required' });
   const id = String(req.params.id);
@@ -1839,9 +1809,9 @@ app.get("/comentarios", async (req, res) => {
 });
 
 // POST /comentarios  { propiedad, usuario, contenido } -> crea 'pendiente'
-app.post("/comentarios", verificarToken, async (req, res) => {
-    const { propiedad, contenido } = req.body || {};
-    const usuario = req.usuario.username;  if (!usuario || !contenido || !propiedad) {
+app.post("/comentarios", async (req, res) => {
+  const { propiedad, usuario, contenido } = req.body || {};
+  if (!usuario || !contenido || !propiedad) {
     return res.status(400).json({ success: false, message: "Faltan datos" });
   }
   try {
@@ -1857,7 +1827,7 @@ app.post("/comentarios", verificarToken, async (req, res) => {
 });
 
 // GET /comentarios/pendientes  -> revisión (pendientes, asc)
-app.get("/comentarios/pendientes", verificarToken, verificarAdminMVI, async (_req, res) => {
+app.get("/comentarios/pendientes", async (_req, res) => {
   try {
     const result = await pool.query(`
       SELECT * FROM comentarios
@@ -1872,7 +1842,7 @@ app.get("/comentarios/pendientes", verificarToken, verificarAdminMVI, async (_re
 });
 
 // PUT /comentarios/:id/aprobar  -> pasa a 'aprobado'
-app.put("/comentarios/:id/aprobar", verificarToken, verificarAdminMVI, async (req, res) => {
+app.put("/comentarios/:id/aprobar", async (req, res) => {
   const id = req.params.id;
   try {
     await pool.query(`
@@ -1888,7 +1858,7 @@ app.put("/comentarios/:id/aprobar", verificarToken, verificarAdminMVI, async (re
 });
 
 // DELETE /comentarios/:id  -> elimina
-app.delete("/comentarios/:id", verificarToken, verificarAdminMVI, async (req, res) => {
+app.delete("/comentarios/:id", async (req, res) => {
   const id = req.params.id;
   try {
     await pool.query(`DELETE FROM comentarios WHERE id = $1`, [id]);
@@ -1945,17 +1915,17 @@ app.post('/api/embajadores', async (req, res) => {
 });
 
 // DELETE /api/my/opiniones/:id  -> solo el dueño de la opinión (o admin MVI)
-app.delete('/api/my/opiniones/:id', verificarToken, async (req, res) => {
+app.delete('/api/my/opiniones/:id', async (req, res) => {
   const id = req.params.id;
-  const yo = req.usuario.username;
-const myUser = req.usuario.username;
+  const headerUser = req.header('X-Username');
+  if (!headerUser) return res.status(401).json({ error: 'auth_required' });
 
   try {
     const r = await pool.query(`SELECT usuario FROM comentarios WHERE id=$1`, [id]);
     if (!r.rows.length) return res.status(404).json({ error: 'not_found' });
 
-      const isAdmin = req.usuario?.username === 'MVI';
-      if (r.rows[0].usuario !== myUser && !isAdmin) {
+    const isAdmin = req.usuario && (req.usuario.username === 'MVI');
+    if (r.rows[0].usuario !== headerUser && !isAdmin) {
       return res.status(403).json({ error: 'forbidden' });
     }
 
@@ -1967,9 +1937,9 @@ const myUser = req.usuario.username;
   }
 });
 
-app.get('/api/perfil/:usuario', optionalToken, async (req, res) => {
+app.get('/api/perfil/:usuario', async (req, res) => {
   const usuario = req.params.usuario;
-  const viewer = req.usuario?.username || null;
+  const viewer = req.header('X-Username') || null;
   try {
     const u = await pool.query(
       'SELECT usuario, email, descripcion, cartera_publica FROM usuarios WHERE usuario = $1',
@@ -1996,13 +1966,12 @@ app.get('/api/perfil/:usuario', optionalToken, async (req, res) => {
   }
 });
 
-app.put('/api/perfil/cartera-privacidad', verificarToken, async (req, res) => {
-const { usuario, publica } = req.body || {};
-  if (!usuario) return res.status(400).json({ success:false, message:'Falta usuario' });
-  const isAdmin = req.usuario?.username === 'MVI';
-  if (!isAdmin && req.usuario.username !== usuario) {
-    return res.status(403).json({ success:false, message:'Solo puedes editar tu perfil' });
-  }
+app.put('/api/perfil/cartera-privacidad', async (req, res) => {
+  const viewer = req.header('X-Username');
+  const { usuario, publica } = req.body || {};
+  if (!viewer) return res.status(401).json({ success: false, message: 'Auth requerida' });
+  if (!usuario || viewer !== usuario) return res.status(403).json({ success: false, message: 'Solo puedes editar tu perfil' });
+
   try {
     await pool.query('UPDATE usuarios SET cartera_publica = $1 WHERE usuario = $2', [!!publica, usuario]);
     res.json({ success: true });
