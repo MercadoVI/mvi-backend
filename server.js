@@ -983,25 +983,21 @@ app.post('/api/inversion', async (req, res) => {
 // =========================
 /* ADMIN dashboards */
 // =========================
-
-// DELETE — eliminar usuario por nombre (solo admin MVI)
-app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
+// DELETE — eliminar usuario por nombre (estrictamente solo MVI con JWT)
+app.delete('/api/admin/usuarios/por-nombre/:usuario', verificarToken, async (req, res) => {
   try {
-    // Acepta cualquiera de estos mecanismos de “ser admin”:
-    const isAdmin =
-      req.query.admin === 'MVI' ||
-      req.header('X-Username') === 'MVI' ||
-      (req.usuario && req.usuario.username === 'MVI'); // si vienes con Bearer token
-
-    if (!isAdmin) {
-      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
+    if (req.usuario?.username !== 'MVI') {
+      return res.status(403).json({ success: false, message: 'Acceso denegado. Solo MVI.' });
     }
 
     const usuario = req.params.usuario;
     if (!usuario) return res.status(400).json({ success: false, message: 'Falta usuario.' });
 
-    // Borrado en cascada: inversiones, comentarios y favoritos ya referencian al usuario
-    // con ON DELETE CASCADE en tu esquema.
+    // Evitar borrarte a ti mismo o borrar la propia cuenta MVI (recomendado)
+    if (usuario === 'MVI') {
+      return res.status(400).json({ success: false, message: 'La cuenta MVI no puede eliminarse.' });
+    }
+
     const r = await pool.query('DELETE FROM usuarios WHERE usuario = $1 RETURNING usuario', [usuario]);
 
     if (!r.rowCount) {
@@ -1014,6 +1010,7 @@ app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
     res.status(500).json({ success: false, message: 'Error al eliminar usuario.' });
   }
 });
+
 
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
 // Protege la lista de usuarios e inversiones solo para MVI
@@ -1941,29 +1938,26 @@ app.delete('/api/my/opiniones/:id', async (req, res) => {
   }
 });
 
-app.get('/api/perfil/:usuario', async (req, res) => {
+// PERFIL: solo el propio usuario o MVI
+app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   const usuario = req.params.usuario;
-  const viewer = req.header('X-Username') || null;
   try {
+    if (req.usuario.username !== usuario && req.usuario.username !== 'MVI') {
+      return res.status(403).json({ success: false, message: 'Acceso denegado: solo tu perfil o MVI.' });
+    }
+
     const u = await pool.query(
       'SELECT usuario, email, descripcion, cartera_publica FROM usuarios WHERE usuario = $1',
       [usuario]
     );
     if (!u.rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
 
-    const esDueno = viewer && viewer === usuario;
-    const esPublica = !!u.rows[0].cartera_publica;
+    const inv = await pool.query(
+      'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
+      [usuario]
+    );
 
-    let inversiones = [];
-    if (esDueno || esPublica) {
-      const inv = await pool.query(
-        'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
-        [usuario]
-      );
-      inversiones = inv.rows;
-    }
-
-    res.json({ success: true, user: u.rows[0], inversiones });
+    res.json({ success: true, user: u.rows[0], inversiones: inv.rows });
   } catch (e) {
     console.error('GET /api/perfil/:usuario', e);
     res.status(500).json({ success: false, message: 'Error al recuperar perfil.' });
