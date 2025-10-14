@@ -1016,9 +1016,13 @@ app.delete('/api/admin/usuarios/por-nombre/:usuario', async (req, res) => {
 });
 
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
-app.get('/api/admin/data', async (req, res) => {
-  const admin = req.query.admin;
-  if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
+// Protege la lista de usuarios e inversiones solo para MVI
+app.get('/api/admin/data', verificarToken, (req, res, next) => {
+  if (req.usuario.username !== 'MVI') {
+    return res.status(403).json({ success: false, message: 'Acceso denegado. Solo MVI.' });
+  }
+  next();
+}, async (req, res) => {
   try {
     const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
     const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
