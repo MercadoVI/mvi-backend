@@ -1012,6 +1012,19 @@ app.delete('/api/admin/usuarios/por-nombre/:usuario', verificarToken, async (req
 });
 
 
+// === RUTA PÚBLICA: contador de usuarios ===
+app.get('/api/public/usercount', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*) AS total FROM usuarios');
+    res.json({ total: parseInt(result.rows[0].total, 10) });
+  } catch (err) {
+    console.error('Error al obtener conteo de usuarios:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+
+
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
 // Protege la lista de usuarios e inversiones solo para MVI
 app.get('/api/admin/data', verificarToken, (req, res, next) => {
