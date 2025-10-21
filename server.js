@@ -44,7 +44,33 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Username'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 }));
-app.use(express.static(__dirname));
+// ===== Cache estática optimizada (reemplaza tu express.static actual) =====
+const compression = require('compression');   // <— arriba del todo junto a otros require
+app.use(compression());                       // GZIP/Brotli (si está disponible en el host)
+
+const ONE_YEAR = 31536000; // en segundos
+const FIVE_MIN = 300;
+
+app.use(express.static(__dirname, {
+  etag: true,
+  lastModified: true,
+  // maxAge por defecto (por si no coincide ningún patrón)
+  maxAge: FIVE_MIN * 1000,
+  setHeaders: (res, filePath) => {
+    // 1) HTML: corto y revalidable
+    if (/\.html?$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate');
+      return;
+    }
+    // 2) Estáticos fingerprintables: 1 año + immutable
+    if (/\.(?:js|css|png|jpe?g|gif|svg|webp|ico|woff2?)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', `public, max-age=${ONE_YEAR}, immutable`);
+      return;
+    }
+    // 3) Fallback (JSON u otros): corto
+    res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate');
+  }
+}));
 app.use(express.json());
 
 // =========================
