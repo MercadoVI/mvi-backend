@@ -584,6 +584,13 @@ CREATE TABLE IF NOT EXISTS user_push_tokens (
 
 CREATE INDEX IF NOT EXISTS ix_push_tokens_user ON user_push_tokens(user_id);
 
+-- Control de difusiones (idempotencia por clave)
+CREATE TABLE IF NOT EXISTS notif_broadcast (
+  bkey TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
 `);
 
     console.log('✅ Tablas/migraciones OK.');
@@ -2080,38 +2087,73 @@ app.post('/api/push/unregister', async (req, res) => {
     res.status(500).json({ success: false });
   }
 });
-
 // Guarda en tu feed interno la notificación mostrada al usuario (ack desde el SW/cliente)
+// Si incluye broadcastKey, la difunde a TODOS los usuarios con idempotencia.
 app.post('/api/push/ingest', async (req, res) => {
+  const client = await pool.connect();
   try {
-    // Igual que antes: resolvemos el usuario por JWT o X-Username
+    await client.query('BEGIN');
+
+    // Resolver usuario (para el caso no-broadcast)
     let userId = null;
     if (req.usuario?.id) {
       userId = req.usuario.id;
     } else {
       const headerUser = req.header('X-Username');
       if (headerUser) {
-        const r = await pool.query(`SELECT id FROM usuarios WHERE usuario=$1 LIMIT 1`, [headerUser]);
+        const r = await client.query(`SELECT id FROM usuarios WHERE usuario=$1 LIMIT 1`, [headerUser]);
         userId = r.rows[0]?.id || null;
       }
     }
-    if (!userId) return res.status(401).json({ success: false, message: 'auth_required' });
 
-    const { title, body } = req.body || {};
-    if (!title && !body) return res.status(400).json({ success: false, message: 'missing_payload' });
+    const { title, body, broadcastKey } = req.body || {};
+    if (!title && !body) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'missing_payload' });
+    }
 
-    await pool.query(
+    if (broadcastKey) {
+      // Idempotencia: solo insertamos 1 vez por clave
+      const insKey = await client.query(
+        `INSERT INTO notif_broadcast (bkey) VALUES ($1)
+         ON CONFLICT (bkey) DO NOTHING
+         RETURNING bkey`,
+        [broadcastKey]
+      );
+
+      if (insKey.rowCount > 0) {
+        // Primera vez que vemos esta clave -> difundir a todos
+        await client.query(
+          `INSERT INTO community_notifications (user_id, titulo, mensaje)
+           SELECT id, $1, $2 FROM usuarios`,
+          [title || 'Notificación', body || '']
+        );
+      }
+      await client.query('COMMIT');
+      return res.json({ success: true, broadcast: true });
+    }
+
+    // Modo normal: guardar solo para el usuario que lo recibió
+    if (!userId) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ success: false, message: 'auth_required' });
+    }
+
+    await client.query(
       `INSERT INTO community_notifications (user_id, titulo, mensaje) VALUES ($1,$2,$3)`,
       [userId, title || 'Notificación', body || '']
     );
 
-    res.json({ success: true });
+    await client.query('COMMIT');
+    res.json({ success: true, broadcast: false });
   } catch (e) {
+    await client.query('ROLLBACK');
     console.error('POST /api/push/ingest', e);
     res.status(500).json({ success: false, message: 'server_error' });
+  } finally {
+    client.release();
   }
 });
-
 
 // =========================
 // Start
