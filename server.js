@@ -572,6 +572,18 @@ END$$;
 
 -- Índice útil
 CREATE INDEX IF NOT EXISTS ix_notifs_user ON community_notifications(user_id, "read", created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_push_tokens (
+  user_id   INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  token     TEXT    NOT NULL,
+  platform  TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, token)
+);
+
+CREATE INDEX IF NOT EXISTS ix_push_tokens_user ON user_push_tokens(user_id);
+
 `);
 
     console.log('✅ Tablas/migraciones OK.');
@@ -2018,6 +2030,87 @@ app.put('/api/perfil/cartera-privacidad', async (req, res) => {
   }
 });
 
+// Guarda el token FCM que devuelve Firebase en el cliente
+app.post('/api/push/register', async (req, res) => {
+  try {
+    // Acepta: JWT estándar (Authorization: Bearer ...) o cabecera X-Username (como ya haces en comunidad)
+    let userRow = null;
+    if (req.usuario?.id) {
+      userRow = { id: req.usuario.id, usuario: req.usuario.username };
+    } else {
+      const headerUser = req.header('X-Username');
+      if (headerUser) {
+        const r = await pool.query(`SELECT id, usuario FROM usuarios WHERE usuario=$1 LIMIT 1`, [headerUser]);
+        userRow = r.rows[0] || null;
+      }
+    }
+    if (!userRow) return res.status(401).json({ success: false, message: 'auth_required' });
+
+    const { token, platform } = req.body || {};
+    if (!token) return res.status(400).json({ success: false, message: 'missing_token' });
+
+    await pool.query(`
+      INSERT INTO user_push_tokens (user_id, token, platform)
+      VALUES ($1,$2,$3)
+      ON CONFLICT (user_id, token)
+      DO UPDATE SET last_seen=now(), platform=COALESCE(EXCLUDED.platform, user_push_tokens.platform)
+    `, [userRow.id, token, platform || null]);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('POST /api/push/register', e);
+    res.status(500).json({ success: false, message: 'server_error' });
+  }
+});
+
+// Opcional: desregistrar token (cuando el usuario cierra sesión o el SW lo invalida)
+app.post('/api/push/unregister', async (req, res) => {
+  try {
+    const headerUser = req.header('X-Username');
+    const { token } = req.body || {};
+    if (!headerUser || !token) return res.status(400).json({ success: false, message: 'missing_data' });
+    await pool.query(`
+      DELETE FROM user_push_tokens
+      USING usuarios u
+      WHERE user_push_tokens.user_id = u.id AND u.usuario=$1 AND user_push_tokens.token=$2
+    `, [headerUser, token]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('POST /api/push/unregister', e);
+    res.status(500).json({ success: false });
+  }
+});
+
+// Guarda en tu feed interno la notificación mostrada al usuario (ack desde el SW/cliente)
+app.post('/api/push/ingest', async (req, res) => {
+  try {
+    // Igual que antes: resolvemos el usuario por JWT o X-Username
+    let userId = null;
+    if (req.usuario?.id) {
+      userId = req.usuario.id;
+    } else {
+      const headerUser = req.header('X-Username');
+      if (headerUser) {
+        const r = await pool.query(`SELECT id FROM usuarios WHERE usuario=$1 LIMIT 1`, [headerUser]);
+        userId = r.rows[0]?.id || null;
+      }
+    }
+    if (!userId) return res.status(401).json({ success: false, message: 'auth_required' });
+
+    const { title, body } = req.body || {};
+    if (!title && !body) return res.status(400).json({ success: false, message: 'missing_payload' });
+
+    await pool.query(
+      `INSERT INTO community_notifications (user_id, titulo, mensaje) VALUES ($1,$2,$3)`,
+      [userId, title || 'Notificación', body || '']
+    );
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('POST /api/push/ingest', e);
+    res.status(500).json({ success: false, message: 'server_error' });
+  }
+});
 
 
 // =========================
