@@ -1,79 +1,37 @@
 [
     {
-        "id": "HM-ESP",
-        "imagen": "hm-esp.webp",
-        "rentabilidad": "23",
-        "nombre": "Holton Madrid",
-        "link":"hm-esp.html"
-    },
-    {
-        "id": "HAB-ESP",
-        "imagen": "hab-esp.webp",
-        "rentabilidad": "27.6",
-        "nombre": "Hotel Aurum Barcelona",
-        "link":"hab-esp.html"
-    },
-    {
-        "id": "PRA-UBE",
+        "id": "PRA-CL",
         "imagen": "URBANITAE.jpg",
         "rentabilidad": "10",
         "nombre": "Proyecto Residencial Arquerías II",
-        "link":"pra-ube.html"
+        "link": "pra-cl.html"
     },
     {
-        "id": "HS-FRA",
-        "imagen": "sh-fra.webp",
-        "rentabilidad": "35.6",
-        "nombre": "Hôtel Stellar",
-        "link": "sh-fra.html"
+        "id": "HIN-CL",
+        "imagen": "https://www.wecity.com/wp-content/uploads/2025/02/wecity_imag_inversion_Granada_Hotel-Inglaterra-1200x675.jpg",
+        "rentabilidad": "12",
+        "nombre": "Granada Hotel Inglaterra",
+        "link": "hin-cl.html"
     },
     {
-        "id": "TR-ITA",
-        "imagen": "rr-ita.webp",
-        "rentabilidad": "34",
-        "nombre": "Trivium Roma",
-        "link": "rr-ita.html"
+        "id": "APL-CF",
+        "imagen": "https://d2bgecu03t03da.cloudfront.net/project/1bce9ff6-24ba-4685-b8ac-a56f7eb08da1/58ff8ffe-1def-4602-b8ed-548c8ad18f1f-GALLERY_2025-07-21T13:36:11.405294213_all_ALL.JPG",
+        "rentabilidad": "29.81",
+        "nombre": "Alt de Pedrell",
+        "link": "apl-cf.html"
     },
     {
-        "id": "CB-ALE",
-        "imagen": "cb-deu.webp",
-        "rentabilidad": "36.1",
-        "nombre": "Crystalium Berlin",
-        "link": "cb-deu.html"
+        "id": "MON-CL",
+        "imagen": "https://s3-eu-west-1.amazonaws.com/urbanitae-prod-static-content/project/P000396/images/Carrousel_1.jpg",
+        "rentabilidad": "16",
+        "nombre": "Proyecto Moon 64",
+        "link": "mon-cl.html"
     },
     {
-        "id": "TB-GBR",
-        "imagen": "tb-gbr.webp",
+        "id": "RMD-CL",
+        "imagen": "https://stockcrowdin-public.s3.amazonaws.com/2025/090410/Imagen_Los_Molinos_Portada_1.png",
         "rentabilidad": "13",
-        "nombre": "Thames Blade",
-        "link": "tb-gbr.html"
-    },
-    {
-        "id": "TT-EEUU",
-        "imagen": "tt-usa.webp",
-        "rentabilidad": "50.5",
-        "nombre": "TT One Manhattan",
-        "link": "tt-eeuu.html"
-    },
-    {
-        "id": "MG-JPN",
-        "imagen": "mg-jpn.webp",
-        "rentabilidad": "38.4",
-        "nombre": "Mirai Garden",
-        "link": "mg-jpn.html"
-    },
-    {
-        "id": "SKSA-AUS",
-        "imagen": "sksa-aus.webp",
-        "rentabilidad": "21.6",
-        "nombre": "SkySail Airport",
-        "link": "sksa-aus.html"
-    },
-    {
-        "id": "HMB-SGP",
-        "imagen": "hmbs-sgp.webp",
-        "rentabilidad": "45.2",
-        "nombre": "Heliora Majestic Bay",
-        "link": "hmbs-sgp.html"
+        "nombre": "Retablo de las Maravillas D9",
+        "link": "rmd-cl.html"
     }
 ]
