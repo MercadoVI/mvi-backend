@@ -644,6 +644,31 @@ function verificarToken(req, res, next) {
   });
 }
 
+// ====== REFERRALS: helpers de codificación segura (letra→número) ======
+function encodeUsernameToNumbers(username) {
+  const map = {
+    A:'01',B:'02',C:'03',D:'04',E:'05',F:'06',G:'07',H:'08',I:'09',
+    J:'10',K:'11',L:'12',M:'13',N:'14',O:'15',P:'16',Q:'17',R:'18',
+    S:'19',T:'20',U:'21',V:'22',W:'23',X:'24',Y:'25'
+    ,Z:'26'
+  };
+  return String(username || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')       // solo A-Z y 0-9
+    .split('')
+    .map(ch => map[ch] || ch)        // letras → números; dígitos quedan igual
+    .join('')
+    .slice(0, 14);                    // límite para no hacer códigos larguísimos
+}
+
+function buildReferralCodeFromUser(username) {
+  const encoded = encodeUsernameToNumbers(username);
+  // bloque aleatorio para evitar colisiones
+  const rand = Math.random().toString(36).slice(2, 7).toUpperCase();
+  // sin el nombre literal, sólo prefijo + parte codificada + aleatorio
+  return `RI-${encoded}-${rand}`;
+}
+
 
 
 // =========================
@@ -823,29 +848,53 @@ app.post('/auth/google/idtoken', async (req, res) => {
 });
 
 
-// === REFERIDOS: generar código (usuario logueado) ===
+// === REFERIDOS: generar código (usuario logueado) — NUEVA VERSIÓN CIFRADA ===
 app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
+  const client = await pool.connect();
   try {
-    const emisor = req.usuario.username; // ajusta si tu payload usa otra clave
-    const r = await pool.query(
+    const emisor = req.usuario.username; // viene del JWT
+    // límite de 6 invitaciones emitidas
+    const r0 = await client.query(
       'SELECT invitaciones_emitidas FROM invitaciones_contador WHERE usuario=$1',
       [emisor]
     );
-    const emitidas = r.rows[0]?.invitaciones_emitidas || 0;
-    if (emitidas >= 6) return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
+    const emitidas = r0.rows[0]?.invitaciones_emitidas || 0;
+    if (emitidas >= 6) {
+      return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
+    }
 
-    const rand = Math.random().toString(36).slice(2,7).toUpperCase();
-    const base = emisor.replace(/\s+/g,'').toUpperCase().slice(0,12);
-    const codigo = `RI-${base}-${rand}`;
-
-    await pool.query(
-      'INSERT INTO invitaciones(codigo,emisor,meses_otorgables) VALUES($1,$2,$3)',
-      [codigo, emisor, 1]
-    );
-    if (r.rows.length) {
-      await pool.query('UPDATE invitaciones_contador SET invitaciones_emitidas=invitaciones_emitidas+1 WHERE usuario=$1', [emisor]);
-    } else {
-      await pool.query('INSERT INTO invitaciones_contador(usuario,invitaciones_emitidas,meses_acumulados) VALUES($1,1,0)', [emisor]);
+    // genera código con usuario codificado (letra→número) + aleatorio
+    let codigo;
+    let intentos = 0;
+    while (true) {
+      intentos++;
+      codigo = buildReferralCodeFromUser(emisor);
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'INSERT INTO invitaciones (codigo, emisor, meses_otorgables) VALUES ($1,$2,$3)',
+          [codigo, emisor, 1]
+        );
+        if (r0.rows.length) {
+          await client.query(
+            'UPDATE invitaciones_contador SET invitaciones_emitidas = invitaciones_emitidas + 1 WHERE usuario=$1',
+            [emisor]
+          );
+        } else {
+          await client.query(
+            'INSERT INTO invitaciones_contador (usuario, invitaciones_emitidas, meses_acumulados) VALUES ($1, 1, 0)',
+            [emisor]
+          );
+        }
+        await client.query('COMMIT');
+        break; // ok
+      } catch (e) {
+        await client.query('ROLLBACK');
+        // 23505 = unique_violation; reintenta con otro aleatorio
+        if (e && e.code === '23505' && intentos < 5) continue;
+        console.error('generar invitación (código):', e);
+        return res.status(500).json({ success:false, message:'server_error' });
+      }
     }
 
     const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
@@ -853,7 +902,9 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
     res.json({ success:true, codigo, link });
   } catch (e) {
     console.error('generar invitación', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    return res.status(500).json({ success:false, message:'server_error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -939,6 +990,110 @@ app.get('/api/invitaciones/listar', verificarToken, async (req, res) => {
     res.status(500).json({ success:false, message:'server_error' });
   }
 });
+
+// === REFERIDOS: mis invitaciones (del emisor) ===
+// Devuelve lista de invitaciones del usuario autenticado + cuántas le restan (máx. 6)
+app.get('/api/invitaciones/mias', verificarToken, async (req, res) => {
+  try {
+    const emisor = req.usuario.username;
+
+    const [cont, invs] = await Promise.all([
+      pool.query('SELECT invitaciones_emitidas FROM invitaciones_contador WHERE usuario=$1', [emisor]),
+      pool.query(`
+        SELECT codigo, estado, receptor, creado_en, reclamado_en, activado_en
+        FROM invitaciones
+        WHERE emisor=$1
+        ORDER BY creado_en DESC NULLS LAST, id DESC
+      `, [emisor])
+    ]);
+
+    const emitidas = cont.rows[0]?.invitaciones_emitidas || 0;
+    const restantes = Math.max(0, 6 - emitidas);
+
+    const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
+    const items = invs.rows.map(r => ({
+      codigo: r.codigo,
+      estado: r.estado,          // generado | reclamado | activado | rechazado
+      receptor: r.receptor || null,
+      creado_en: r.creado_en,
+      reclamado_en: r.reclamado_en,
+      activado_en: r.activado_en,
+      link: `${linkBase}/entrar.html?ref=${encodeURIComponent(r.codigo)}`
+    }));
+
+    res.json({ success: true, restantes, emitidas, items });
+  } catch (e) {
+    console.error('GET /api/invitaciones/mias', e);
+    res.status(500).json({ success:false, message:'server_error' });
+  }
+});
+
+// === REFERIDOS: generar código (usuario logueado) — NUEVA VERSIÓN CIFRADA ===
+app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const emisor = req.usuario.username;
+
+    const r0 = await client.query(
+      'SELECT invitaciones_emitidas FROM invitaciones_contador WHERE usuario=$1',
+      [emisor]
+    );
+    const emitidasIni = r0.rows[0]?.invitaciones_emitidas || 0;
+    if (emitidasIni >= 6) {
+      return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
+    }
+
+    let codigo; let intentos = 0;
+    while (true) {
+      intentos++;
+      codigo = buildReferralCodeFromUser(emisor); // ← usa el helper ya añadido
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          'INSERT INTO invitaciones (codigo, emisor, meses_otorgables) VALUES ($1,$2,$3)',
+          [codigo, emisor, 1]
+        );
+        if (r0.rows.length) {
+          await client.query(
+            'UPDATE invitaciones_contador SET invitaciones_emitidas = invitaciones_emitidas + 1 WHERE usuario=$1',
+            [emisor]
+          );
+        } else {
+          await client.query(
+            'INSERT INTO invitaciones_contador (usuario, invitaciones_emitidas, meses_acumulados) VALUES ($1, 1, 0)',
+            [emisor]
+          );
+        }
+        await client.query('COMMIT');
+        break;
+      } catch (e) {
+        await client.query('ROLLBACK');
+        if (e && e.code === '23505' && intentos < 5) continue;
+        console.error('generar invitación (código):', e);
+        return res.status(500).json({ success:false, message:'server_error' });
+      }
+    }
+
+    // recálculo de emitidas/restantes tras la inserción
+    const r1 = await pool.query(
+      'SELECT invitaciones_emitidas FROM invitaciones_contador WHERE usuario=$1',
+      [emisor]
+    );
+    const emitidas = r1.rows[0]?.invitaciones_emitidas || 0;
+    const restantes = Math.max(0, 6 - emitidas);
+
+    const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
+    const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
+
+    res.json({ success:true, codigo, link, restantes, emitidas });
+  } catch (e) {
+    console.error('generar invitación', e);
+    return res.status(500).json({ success:false, message:'server_error' });
+  } finally {
+    client.release();
+  }
+});
+
 
 // === PERFIL: consultar meses premium del usuario ===
 app.get('/api/usuarios/:usuario/premium', verificarToken, async (req, res) => {
