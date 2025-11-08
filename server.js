@@ -630,7 +630,7 @@ async function uniqueUsername(client, base) {
 function verificarAdminMVI(req, res, next) {
   const usuario = req.usuario;
   if (usuario && usuario.username === 'MVI') return next();
-  return res.status(403).json({ error: 'Acceso denegado. Solo para el administrador MVI.' });
+  return res.status(403).json({ error: 'Acceso denegado. Solo para el administrador.' });
 }
 
 function verificarToken(req, res, next) {
@@ -675,7 +675,7 @@ function buildReferralCodeFromUser(username) {
 // Rutas misceláneas
 // =========================
 app.get('/healthz', (_, res) => res.json({ ok: true }));
-app.get('/', (_, res) => res.send('Backend MVI activo'));
+app.get('/', (_, res) => res.send('Backend RI activo'));
 
 // =========================
 // Admin (consentimientos)
@@ -1187,7 +1187,7 @@ app.post('/api/inversion', async (req, res) => {
 app.delete('/api/admin/usuarios/por-nombre/:usuario', verificarToken, async (req, res) => {
   try {
     if (req.usuario?.username !== 'MVI') {
-      return res.status(403).json({ success: false, message: 'Acceso denegado. Solo MVI.' });
+      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
     }
 
     const usuario = req.params.usuario;
@@ -1195,7 +1195,7 @@ app.delete('/api/admin/usuarios/por-nombre/:usuario', verificarToken, async (req
 
     // Evitar borrarte a ti mismo o borrar la propia cuenta MVI (recomendado)
     if (usuario === 'MVI') {
-      return res.status(400).json({ success: false, message: 'La cuenta MVI no puede eliminarse.' });
+      return res.status(400).json({ success: false, message: 'La cuenta no puede eliminarse.' });
     }
 
     const r = await pool.query('DELETE FROM usuarios WHERE usuario = $1 RETURNING usuario', [usuario]);
@@ -1229,7 +1229,7 @@ app.get('/api/public/usercount', async (req, res) => {
 // Protege la lista de usuarios e inversiones solo para MVI
 app.get('/api/admin/data', verificarToken, (req, res, next) => {
   if (req.usuario.username !== 'MVI') {
-    return res.status(403).json({ success: false, message: 'Acceso denegado. Solo MVI.' });
+    return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   }
   next();
 }, async (req, res) => {
@@ -2156,7 +2156,7 @@ app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   const usuario = req.params.usuario;
   try {
     if (req.usuario.username !== usuario && req.usuario.username !== 'MVI') {
-      return res.status(403).json({ success: false, message: 'Acceso denegado: solo tu perfil o MVI.' });
+      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
     }
 
     const u = await pool.query(
