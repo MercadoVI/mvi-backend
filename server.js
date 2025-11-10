@@ -23,7 +23,7 @@ try { require('dotenv').config(); } catch (e) {
 // Google Auth para la web
 const { OAuth2Client } = require('google-auth-library');
 const oauthClient = new OAuth2Client();
-const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID 
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_CLIENT_ID 
   || '329044944531-7slu0ro24tjcuu9t4c0hoislmnrbq7sd.apps.googleusercontent.com';
 
 
