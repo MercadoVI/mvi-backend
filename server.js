@@ -31,18 +31,6 @@ const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('Falta JWT_SECRET en variables de entorno');
 
-const admin = require('firebase-admin');
-
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    }),
-  });
-}
-
 // =========================
 // DB
 // =========================
@@ -865,47 +853,43 @@ app.post('/auth/google/idtoken', async (req, res) => {
   }
 });
 
-// === LOGIN DE LA APP (Firebase) ===
 app.post('/auth/firebase/idtoken', async (req, res) => {
   try {
     const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: 'missing_idToken' });
+    if (!idToken) return res.status(400).json({ error: 'missing_id_token' });
 
-    // Verificar token con Firebase
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const email = decoded.email || `${decoded.uid}@firebase.local`;
-    const nombre = decoded.name || email.split('@')[0];
+    // Verificación ligera con Google
+    const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+    const data = await resp.json();
 
-    // Buscar usuario existente por email o uid
-    const result = await pool.query(
-      'SELECT * FROM usuarios WHERE email = $1 OR firebase_uid = $2 LIMIT 1',
-      [email, decoded.uid]
-    );
-
-    let user = result.rows[0];
-
-    if (!user) {
-      // Crear nuevo usuario tipo "Inversor"
-      const nuevo = await pool.query(
-        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider)
-         VALUES ($1, $2, 'Inversor', $3, 'firebase')
-         RETURNING *;`,
-        [nombre, email, decoded.uid]
-      );
-      user = nuevo.rows[0];
+    if (!resp.ok || data.error_description) {
+      return res.status(401).json({ error: 'invalid_token', details: data.error_description || 'tokeninfo rejected' });
     }
 
-    // Generar tu JWT propio
-    const token = jwt.sign(
-      { id: user.id, username: user.usuario, tipo: user.tipo },
-      JWT_SECRET,
-      { expiresIn: '2h' }
-    );
+    const email = (data.email || `${data.sub}@firebase.local`).toLowerCase();
+    const nombre = data.name || email.split('@')[0];
 
+    // Vincula o crea usuario
+    const r = await pool.query(
+      'SELECT * FROM usuarios WHERE email=$1 OR firebase_uid=$2 LIMIT 1',
+      [email, data.sub]
+    );
+    let user = r.rows[0];
+    if (!user) {
+      const ins = await pool.query(
+        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider)
+         VALUES ($1,$2,'Inversor',$3,'firebase')
+         RETURNING *`,
+        [nombre, email, data.sub]
+      );
+      user = ins.rows[0];
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' });
     res.json({ success: true, token, user });
   } catch (err) {
     console.error('Error en /auth/firebase/idtoken', err);
-    res.status(401).json({ error: 'invalid_token' });
+    res.status(500).json({ error: 'server_error' });
   }
 });
 
