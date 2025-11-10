@@ -20,12 +20,28 @@ try { require('dotenv').config(); } catch (e) {
   console.warn('dotenv no disponible; usando variables del entorno');
 }
 
+// Google Auth para la web
 const { OAuth2Client } = require('google-auth-library');
-const oauthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const oauthClient = new OAuth2Client();
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_WEB_CLIENT_ID 
+  || '329044944531-7slu0ro24tjcuu9t4c0hoislmnrbq7sd.apps.googleusercontent.com';
+
 
 // Usa siempre la clave fuerte de JWT desde el entorno
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('Falta JWT_SECRET en variables de entorno');
+
+const admin = require('firebase-admin');
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    }),
+  });
+}
 
 // =========================
 // DB
@@ -186,6 +202,8 @@ async function runMigrations() {
       ADD COLUMN IF NOT EXISTS picture TEXT,
       ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS provider TEXT;
+    ALTER TABLE usuarios
+      ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE;
 
     DO $$
     BEGIN
@@ -761,7 +779,7 @@ app.post('/auth/google/idtoken', async (req, res) => {
     // 1) Verificar ID Token con Google
     const ticket = await oauthClient.verifyIdToken({
       idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID
+      audience: GOOGLE_WEB_CLIENT_ID
     });
     const payload = ticket.getPayload(); // sub, email, email_verified, name, picture...
     const googleId = payload.sub;
@@ -844,6 +862,50 @@ app.post('/auth/google/idtoken', async (req, res) => {
   } catch (err) {
     console.error('verifyIdToken', err);
     res.status(401).json({ error: 'invalid_google_token' });
+  }
+});
+
+// === LOGIN DE LA APP (Firebase) ===
+app.post('/auth/firebase/idtoken', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ error: 'missing_idToken' });
+
+    // Verificar token con Firebase
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const email = decoded.email || `${decoded.uid}@firebase.local`;
+    const nombre = decoded.name || email.split('@')[0];
+
+    // Buscar usuario existente por email o uid
+    const result = await pool.query(
+      'SELECT * FROM usuarios WHERE email = $1 OR firebase_uid = $2 LIMIT 1',
+      [email, decoded.uid]
+    );
+
+    let user = result.rows[0];
+
+    if (!user) {
+      // Crear nuevo usuario tipo "Inversor"
+      const nuevo = await pool.query(
+        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider)
+         VALUES ($1, $2, 'Inversor', $3, 'firebase')
+         RETURNING *;`,
+        [nombre, email, decoded.uid]
+      );
+      user = nuevo.rows[0];
+    }
+
+    // Generar tu JWT propio
+    const token = jwt.sign(
+      { id: user.id, username: user.usuario, tipo: user.tipo },
+      JWT_SECRET,
+      { expiresIn: '2h' }
+    );
+
+    res.json({ success: true, token, user });
+  } catch (err) {
+    console.error('Error en /auth/firebase/idtoken', err);
+    res.status(401).json({ error: 'invalid_token' });
   }
 });
 
@@ -2151,7 +2213,7 @@ app.delete('/api/my/opiniones/:id', async (req, res) => {
   }
 });
 
-// PERFIL: solo el propio usuario o MVI
+// PERFIL: solo el propio usuario
 app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   const usuario = req.params.usuario;
   try {
