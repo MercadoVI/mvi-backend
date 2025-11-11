@@ -857,174 +857,79 @@ app.post('/auth/google/idtoken', async (req, res) => {
 const FIREBASE_API_KEY = 'AIzaSyDLyTsx_lg6eU65nkL1faPH_axE_mG6NLo';
 
 app.post('/auth/firebase/idtoken', async (req, res) => {
-  const client = await pool.connect();
   try {
-    const { idToken, acepta_privacidad, acepta_terminos } = req.body || {};
-    if (!idToken) return res.status(400).json({ error: 'missing_idToken' });
-
-    // 1) Verificar token Firebase
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const uid = decoded.uid;
-    const email = (decoded.email || `${uid}@firebase.local`).toLowerCase();
-    const picture = decoded.picture || null;
-    const displayName = decoded.name || (email.split('@')[0]);
-    const emailVerified = !!decoded.email_verified;
-
-    await client.query('BEGIN');
-
-    // 2) Bloqueo optimista: ¿ya existe por uid o por email?
-    //    Usamos FOR UPDATE para evitar carreras entre dos peticiones simultáneas.
-    const q1 = await client.query(
-      `SELECT * FROM usuarios
-        WHERE firebase_uid = $1
-           OR LOWER(email) = LOWER($2)
-        FOR UPDATE`,
-      [uid, email]
-    );
-
-    let user = q1.rows[0];
-
-    if (user) {
-      // a) Si existe por email pero sin uid, lo vinculamos
-      if (!user.firebase_uid) {
-        await client.query(
-          `UPDATE usuarios
-             SET firebase_uid=$1,
-                 picture=$2,
-                 email_verified=$3,
-                 provider='firebase'
-           WHERE id=$4`,
-          [uid, picture, emailVerified, user.id]
-        );
-        user = (await client.query(`SELECT * FROM usuarios WHERE id=$1`, [user.id])).rows[0];
-      } else {
-        // b) Ya tenía uid (mismo usuario): refresca metadatos básicos
-        if (user.firebase_uid === uid) {
-          await client.query(
-            `UPDATE usuarios
-                SET picture = COALESCE($1, picture),
-                    email_verified = $2,
-                    provider='firebase'
-              WHERE id=$3`,
-            [picture, emailVerified, user.id]
-          );
-          user = (await client.query(`SELECT * FROM usuarios WHERE id=$1`, [user.id])).rows[0];
-        } else {
-          // c) Caso raro: misma email con otro uid ya vinculado → elegimos respetar el existente
-          // Puedes lanzar error 409 si prefieres forzar intervención manual
-          console.warn('Email ya vinculado a otro firebase_uid; se respeta el existente.');
-        }
-      }
-    } else {
-      // 3) No existe: crear nuevo (tipo Inversor)
-      const usernameBase = (displayName || email.split('@')[0] || `user_${uid.slice(-6)}`).replace(/\s+/g, '');
-      // helper para generar un username único (si no lo tienes, fija usernameBase directamente)
-      const uniqueUsername = async (base) => {
-        let name = base;
-        let i = 0;
-        while (true) {
-          const check = await client.query(`SELECT 1 FROM usuarios WHERE usuario=$1 LIMIT 1`, [name]);
-          if (check.rowCount === 0) return name;
-          i += 1;
-          name = `${base}${i}`;
-        }
-      };
-      const username = await uniqueUsername(usernameBase);
-
-      try {
-        const ins = await client.query(
-          `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider, picture, email_verified)
-           VALUES ($1,$2,'Inversor',$3,'firebase',$4,$5)
-           RETURNING *`,
-          [username, email, uid, picture, emailVerified]
-        );
-        user = ins.rows[0];
-      } catch (e) {
-        // Si aquí entra 23505 es que alguien insertó en paralelo: re-leemos y seguimos
-        if (e.code === '23505') {
-          const reread = await client.query(
-            `SELECT * FROM usuarios
-              WHERE firebase_uid=$1 OR LOWER(email)=LOWER($2)
-              LIMIT 1`,
-            [uid, email]
-          );
-          if (reread.rowCount) user = reread.rows[0];
-          else throw e;
-        } else {
-          throw e;
-        }
-      }
-
-      // Consentimientos (opcional)
-      if (acepta_privacidad && acepta_terminos) {
-        await client.query(
-          `INSERT INTO consentimientos (user_id, acepta_privacidad, acepta_terminos, ip_usuario)
-           VALUES ($1,$2,$3,$4)`,
-          [user.id, true, true, req.ip]
-        );
-      }
+    const { idToken } = req.body || {};
+    if (!idToken) {
+      return res.status(400).json({ error: 'missing_id_token' });
+    }
+    if (!FIREBASE_API_KEY) {
+      return res.status(500).json({ error: 'server_misconfig', details: 'Falta FIREBASE_API_KEY' });
     }
 
-    await client.query('COMMIT');
+    // ✅ Verificación correcta del ID token de Firebase
+    const resp = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      }
+    );
+    const data = await resp.json();
 
-    // 4) Emite tu JWT
+    if (!resp.ok || !data?.users?.length) {
+      return res.status(401).json({
+        error: 'invalid_token',
+        details: data?.error?.message || 'accounts:lookup failed'
+      });
+    }
+
+    // Usuario Firebase
+    const u = data.users[0];
+    const firebaseUid = u.localId;
+    const email = (u.email || `${firebaseUid}@firebase.local`).toLowerCase();
+    const nombre = u.displayName || email.split('@')[0];
+    const picture = u.photoUrl || null;
+
+    // Vincula/crea en tu BD
+    const r = await pool.query(
+      'SELECT * FROM usuarios WHERE email=$1 OR firebase_uid=$2 LIMIT 1',
+      [email, firebaseUid]
+    );
+    let user = r.rows[0];
+
+    if (!user) {
+      const ins = await pool.query(
+        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider, picture)
+         VALUES ($1,$2,'Inversor',$3,'firebase',$4)
+         RETURNING *`,
+        [nombre, email, firebaseUid, picture]
+      );
+      user = ins.rows[0];
+    } else if (!user.firebase_uid) {
+      // si ya existía por email, guardamos el UID
+      await pool.query(
+        'UPDATE usuarios SET firebase_uid=$1, provider=$2 WHERE id=$3',
+        [firebaseUid, 'firebase', user.id]
+      );
+      const r2 = await pool.query('SELECT * FROM usuarios WHERE id=$1', [user.id]);
+      user = r2.rows[0];
+    }
+
     const token = jwt.sign(
       { id: user.id, username: user.usuario, tipo: user.tipo },
       JWT_SECRET,
       { expiresIn: '2h' }
     );
 
-    // 5) ¿tiene consentimiento vigente?
-    const cons = await pool.query(
-      `SELECT 1 FROM consentimientos
-        WHERE user_id=$1 AND acepta_privacidad AND acepta_terminos
-        ORDER BY fecha_consentimiento DESC LIMIT 1`,
-      [user.id]
-    );
-
-    res.json({
+    return res.json({
       success: true,
       token,
-      user: {
-        id: user.id,
-        usuario: user.usuario,
-        email: user.email,
-        tipo: user.tipo,
-        picture: user.picture
-      },
-      legal_ok: cons.rowCount > 0
+      user: { id: user.id, usuario: user.usuario, email: user.email, tipo: user.tipo, picture }
     });
   } catch (err) {
-    // Segundo try-catch por si llega igualmente el 23505 fuera del bloque
-    if (err && err.code === '23505') {
-      try {
-        const { idToken } = req.body || {};
-        const decoded = await admin.auth().verifyIdToken(idToken);
-        const uid = decoded.uid;
-        const email = (decoded.email || `${uid}@firebase.local`).toLowerCase();
-        const reread = await pool.query(
-          `SELECT * FROM usuarios
-            WHERE firebase_uid=$1 OR LOWER(email)=LOWER($2)
-            LIMIT 1`,
-          [uid, email]
-        );
-        if (reread.rowCount) {
-          const user = reread.rows[0];
-          const token = jwt.sign(
-            { id: user.id, username: user.usuario, tipo: user.tipo },
-            JWT_SECRET,
-            { expiresIn: '2h' }
-          );
-          return res.json({ success: true, token, user, legal_ok: true });
-        }
-      } catch (_) { /* sin ruido extra */ }
-    }
-
     console.error('Error en /auth/firebase/idtoken', err);
-    res.status(500).json({ error: 'server_error' });
-  } finally {
-    // Asegura liberar el cliente siempre
-    try { client.release(); } catch {}
+    return res.status(401).json({ error: 'invalid_token' });
   }
 });
 
