@@ -853,43 +853,83 @@ app.post('/auth/google/idtoken', async (req, res) => {
   }
 });
 
+// Requiere que definas FIREBASE_API_KEY en Render (la misma del cliente)
+const FIREBASE_API_KEY = 'AIzaSyDLyTsx_lg6eU65nkL1faPH_axE_mG6NLo';
+
 app.post('/auth/firebase/idtoken', async (req, res) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: 'missing_id_token' });
+    const { idToken } = req.body || {};
+    if (!idToken) {
+      return res.status(400).json({ error: 'missing_id_token' });
+    }
+    if (!FIREBASE_API_KEY) {
+      return res.status(500).json({ error: 'server_misconfig', details: 'Falta FIREBASE_API_KEY' });
+    }
 
-    // Verificación ligera con Google
-    const resp = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+    // ✅ Verificación correcta del ID token de Firebase
+    const resp = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      }
+    );
     const data = await resp.json();
 
-    if (!resp.ok || data.error_description) {
-      return res.status(401).json({ error: 'invalid_token', details: data.error_description || 'tokeninfo rejected' });
+    if (!resp.ok || !data?.users?.length) {
+      return res.status(401).json({
+        error: 'invalid_token',
+        details: data?.error?.message || 'accounts:lookup failed'
+      });
     }
 
-    const email = (data.email || `${data.sub}@firebase.local`).toLowerCase();
-    const nombre = data.name || email.split('@')[0];
+    // Usuario Firebase
+    const u = data.users[0];
+    const firebaseUid = u.localId;
+    const email = (u.email || `${firebaseUid}@firebase.local`).toLowerCase();
+    const nombre = u.displayName || email.split('@')[0];
+    const picture = u.photoUrl || null;
 
-    // Vincula o crea usuario
+    // Vincula/crea en tu BD
     const r = await pool.query(
       'SELECT * FROM usuarios WHERE email=$1 OR firebase_uid=$2 LIMIT 1',
-      [email, data.sub]
+      [email, firebaseUid]
     );
     let user = r.rows[0];
+
     if (!user) {
       const ins = await pool.query(
-        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider)
-         VALUES ($1,$2,'Inversor',$3,'firebase')
+        `INSERT INTO usuarios (usuario, email, tipo, firebase_uid, provider, picture)
+         VALUES ($1,$2,'Inversor',$3,'firebase',$4)
          RETURNING *`,
-        [nombre, email, data.sub]
+        [nombre, email, firebaseUid, picture]
       );
       user = ins.rows[0];
+    } else if (!user.firebase_uid) {
+      // si ya existía por email, guardamos el UID
+      await pool.query(
+        'UPDATE usuarios SET firebase_uid=$1, provider=$2 WHERE id=$3',
+        [firebaseUid, 'firebase', user.id]
+      );
+      const r2 = await pool.query('SELECT * FROM usuarios WHERE id=$1', [user.id]);
+      user = r2.rows[0];
     }
 
-    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' });
-    res.json({ success: true, token, user });
+    const token = jwt.sign(
+      { id: user.id, username: user.usuario, tipo: user.tipo },
+      JWT_SECRET,
+      { expiresIn: '2h' }
+    );
+
+    return res.json({
+      success: true,
+      token,
+      user: { id: user.id, usuario: user.usuario, email: user.email, tipo: user.tipo, picture }
+    });
   } catch (err) {
     console.error('Error en /auth/firebase/idtoken', err);
-    res.status(500).json({ error: 'server_error' });
+    return res.status(401).json({ error: 'invalid_token' });
   }
 });
 
