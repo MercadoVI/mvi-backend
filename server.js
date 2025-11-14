@@ -2263,6 +2263,149 @@ app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   }
 });
 
+// === Actualizar datos básicos del perfil (usuario, descripción, email)
+app.post('/api/actualizar-perfil', verificarToken, async (req, res) => {
+  const { original, nuevoUsuario, nuevaDescripcion, nuevoEmail } = req.body || {};
+
+  if (!original || !nuevoUsuario) {
+    return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
+  }
+
+  // Solo puede cambiar su propio perfil o el admin MVI
+  const loggedUser = req.usuario?.username;
+  if (loggedUser !== original && loggedUser !== 'MVI') {
+    return res.status(403).json({ success: false, message: 'No puedes editar este perfil.' });
+  }
+
+  const newUser = nuevoUsuario.trim();
+  const newDesc = (nuevaDescripcion || '').trim();
+  const newMail = (nuevoEmail || '').trim() || null;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Comprobar que el usuario original existe
+    const rUser = await client.query(
+      'SELECT id, usuario FROM usuarios WHERE usuario = $1 LIMIT 1',
+      [original]
+    );
+    if (!rUser.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Usuario original no encontrado.' });
+    }
+
+    // Si cambia el nombre, comprobar que no exista ya
+    if (newUser !== original) {
+      const rExists = await client.query(
+        'SELECT 1 FROM usuarios WHERE usuario = $1 LIMIT 1',
+        [newUser]
+      );
+      if (rExists.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ success: false, message: 'Ese nombre de usuario ya está en uso.' });
+      }
+    }
+
+    // Actualizar tabla principal de usuarios
+    await client.query(
+      'UPDATE usuarios SET usuario = $1, email = $2, descripcion = $3 WHERE usuario = $4',
+      [newUser, newMail, newDesc || null, original]
+    );
+
+    // Si realmente ha cambiado el nombre, propagamos a las tablas que usan "usuario" como texto
+    if (newUser !== original) {
+      await client.query('UPDATE inversiones SET usuario = $1 WHERE usuario = $2', [newUser, original]);
+      await client.query('UPDATE favoritos  SET usuario = $1 WHERE usuario = $2', [newUser, original]);
+      await client.query('UPDATE comentarios SET usuario = $1 WHERE usuario = $2', [newUser, original]);
+      await client.query('UPDATE invitaciones_contador SET usuario = $1 WHERE usuario = $2', [newUser, original]);
+      await client.query('UPDATE invitaciones SET emisor = $1 WHERE emisor = $2', [newUser, original]);
+      // Si en el futuro añades más tablas con campo "usuario", actualízalas aquí también
+    }
+
+    await client.query('COMMIT');
+    return res.json({
+      success: true,
+      message: 'Perfil actualizado correctamente.',
+      usuario: newUser
+    });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('POST /api/actualizar-perfil', e);
+    return res.status(500).json({ success: false, message: 'Error al actualizar el perfil.' });
+  } finally {
+    client.release();
+  }
+});
+
+// === Exportar datos completos del perfil (para descarga JSON desde perfil.js)
+app.get('/api/perfil/:usuario/export', verificarToken, async (req, res) => {
+  const usuario = req.params.usuario;
+
+  try {
+    // Solo dueño o admin MVI
+    if (req.usuario.username !== usuario && req.usuario.username !== 'MVI') {
+      return res.status(403).json({ success: false, message: 'Acceso denegado.' });
+    }
+
+    const u = await pool.query(
+      'SELECT id, usuario, email, descripcion, tipo, cartera_publica, premium_months_active, premium_months_pending FROM usuarios WHERE usuario = $1',
+      [usuario]
+    );
+    if (!u.rows.length) {
+      return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
+    }
+
+    const inversiones = await pool.query(
+      'SELECT propiedad, cantidad, divisa, fecha FROM inversiones WHERE usuario = $1 ORDER BY fecha DESC',
+      [usuario]
+    );
+
+    const favoritos = await pool.query(
+      'SELECT propiedad FROM favoritos WHERE usuario = $1',
+      [usuario]
+    );
+
+    const comentarios = await pool.query(
+      `SELECT id, propiedad, contenido, fecha, estado
+         FROM comentarios
+        WHERE usuario = $1
+        ORDER BY fecha DESC`,
+      [usuario]
+    );
+
+    // Último consentimiento (si existe)
+    let consentimiento = null;
+    try {
+      const c = await pool.query(`
+        SELECT c.*
+          FROM consentimientos c
+          JOIN usuarios u ON u.id = c.user_id
+         WHERE u.usuario = $1
+         ORDER BY c.fecha_consentimiento DESC
+         LIMIT 1
+      `, [usuario]);
+      consentimiento = c.rows[0] || null;
+    } catch (e) {
+      // No rompemos la exportación si falla esto
+      console.warn('No se pudo obtener consentimiento en export perfil:', e.message);
+    }
+
+    res.json({
+      success: true,
+      user: u.rows[0],
+      inversiones: inversiones.rows,
+      favoritos: favoritos.rows.map(r => r.propiedad),
+      comentarios: comentarios.rows,
+      consentimiento
+    });
+  } catch (e) {
+    console.error('GET /api/perfil/:usuario/export', e);
+    res.status(500).json({ success: false, message: 'Error al exportar datos.' });
+  }
+});
+
+
 app.put('/api/perfil/cartera-privacidad', async (req, res) => {
   const viewer = req.header('X-Username');
   const { usuario, publica } = req.body || {};
