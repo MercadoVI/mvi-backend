@@ -23,7 +23,7 @@ try { require('dotenv').config(); } catch (e) {
 // Google Auth para la web
 const { OAuth2Client } = require('google-auth-library');
 const oauthClient = new OAuth2Client();
-const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_CLIENT_ID 
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
   || '329044944531-7slu0ro24tjcuu9t4c0hoislmnrbq7sd.apps.googleusercontent.com';
 
 
@@ -189,7 +189,8 @@ async function runMigrations() {
       ADD COLUMN IF NOT EXISTS google_id TEXT UNIQUE,
       ADD COLUMN IF NOT EXISTS picture TEXT,
       ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE,
-      ADD COLUMN IF NOT EXISTS provider TEXT;
+      ADD COLUMN IF NOT EXISTS provider TEXT,
+      ADD COLUMN IF NOT EXISTS public_google_avatar BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE usuarios
       ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE;
 
@@ -485,8 +486,8 @@ async function runMigrations() {
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS ux_community_likes_post_user ON community_likes(post_id, user_id);
     `);
-// === PREMIUM & REFERIDOS (migraciones) ===
-await pool.query(`
+    // === PREMIUM & REFERIDOS (migraciones) ===
+    await pool.query(`
   ALTER TABLE usuarios
     ADD COLUMN IF NOT EXISTS premium_months_active  INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS premium_months_pending INTEGER NOT NULL DEFAULT 0,
@@ -653,10 +654,10 @@ function verificarToken(req, res, next) {
 // ====== REFERRALS: helpers de codificación segura (letra→número) ======
 function encodeUsernameToNumbers(username) {
   const map = {
-    A:'01',B:'02',C:'03',D:'04',E:'05',F:'06',G:'07',H:'08',I:'09',
-    J:'10',K:'11',L:'12',M:'13',N:'14',O:'15',P:'16',Q:'17',R:'18',
-    S:'19',T:'20',U:'21',V:'22',W:'23',X:'24',Y:'25'
-    ,Z:'26'
+    A: '01', B: '02', C: '03', D: '04', E: '05', F: '06', G: '07', H: '08', I: '09',
+    J: '10', K: '11', L: '12', M: '13', N: '14', O: '15', P: '16', Q: '17', R: '18',
+    S: '19', T: '20', U: '21', V: '22', W: '23', X: '24', Y: '25'
+    , Z: '26'
   };
   return String(username || '')
     .toUpperCase()
@@ -946,7 +947,7 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
     );
     const emitidas = r0.rows[0]?.invitaciones_emitidas || 0;
     if (emitidas >= 6) {
-      return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
+      return res.status(400).json({ success: false, message: 'Máximo 6 invitaciones.' });
     }
 
     // genera código con usuario codificado (letra→número) + aleatorio
@@ -979,16 +980,16 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
         // 23505 = unique_violation; reintenta con otro aleatorio
         if (e && e.code === '23505' && intentos < 5) continue;
         console.error('generar invitación (código):', e);
-        return res.status(500).json({ success:false, message:'server_error' });
+        return res.status(500).json({ success: false, message: 'server_error' });
       }
     }
 
     const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
     const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
-    res.json({ success:true, codigo, link });
+    res.json({ success: true, codigo, link });
   } catch (e) {
     console.error('generar invitación', e);
-    return res.status(500).json({ success:false, message:'server_error' });
+    return res.status(500).json({ success: false, message: 'server_error' });
   } finally {
     client.release();
   }
@@ -999,18 +1000,18 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
 app.post('/api/invitaciones/reclamar', async (req, res) => {
   try {
     const { receptor, refCode } = req.body || {};
-    if (!receptor || !refCode) return res.status(400).json({ success:false, message:'Datos incompletos.' });
+    if (!receptor || !refCode) return res.status(400).json({ success: false, message: 'Datos incompletos.' });
 
     const inv = await pool.query('SELECT * FROM invitaciones WHERE codigo=$1', [refCode]);
     const row = inv.rows[0];
-    if (!row) return res.status(404).json({ success:false, message:'Código no válido.' });
-    if (row.estado !== 'generado') return res.status(400).json({ success:false, message:'Código ya usado.' });
-    if (row.emisor === receptor) return res.status(400).json({ success:false, message:'No puedes invitarte a ti mismo.' });
+    if (!row) return res.status(404).json({ success: false, message: 'Código no válido.' });
+    if (row.estado !== 'generado') return res.status(400).json({ success: false, message: 'Código ya usado.' });
+    if (row.emisor === receptor) return res.status(400).json({ success: false, message: 'No puedes invitarte a ti mismo.' });
 
     // Límite receptor: máx. 5 meses acumulables
     const cR = await pool.query('SELECT meses_acumulados FROM invitaciones_contador WHERE usuario=$1', [receptor]);
     const mesesRec = cR.rows[0]?.meses_acumulados || 0;
-    if (mesesRec >= 5) return res.status(400).json({ success:false, message:'Máximo 5 meses acumulables por invitado.' });
+    if (mesesRec >= 5) return res.status(400).json({ success: false, message: 'Máximo 5 meses acumulables por invitado.' });
 
     await pool.query('UPDATE invitaciones SET estado=$1, receptor=$2, reclamado_en=now() WHERE codigo=$3',
       ['reclamado', receptor, refCode]);
@@ -1025,10 +1026,10 @@ app.post('/api/invitaciones/reclamar', async (req, res) => {
       await pool.query('INSERT INTO invitaciones_contador(usuario,invitaciones_emitidas,meses_acumulados) VALUES($1,0,1)', [receptor]);
     }
 
-    res.json({ success:true, message:'Invitación reclamada. Meses pendientes añadidos.' });
+    res.json({ success: true, message: 'Invitación reclamada. Meses pendientes añadidos.' });
   } catch (e) {
     console.error('reclamar invitación', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    res.status(500).json({ success: false, message: 'server_error' });
   }
 });
 
@@ -1036,12 +1037,12 @@ app.post('/api/invitaciones/reclamar', async (req, res) => {
 // body: { codigo: "RI-..." }
 app.post('/api/invitaciones/activar', verificarToken, async (req, res) => {
   try {
-    if (req.usuario.username !== 'MVI') return res.status(403).json({ success:false, message:'Solo admin' });
+    if (req.usuario.username !== 'MVI') return res.status(403).json({ success: false, message: 'Solo admin' });
     const { codigo } = req.body || {};
     const inv = await pool.query('SELECT * FROM invitaciones WHERE codigo=$1', [codigo]);
     const row = inv.rows[0];
-    if (!row) return res.status(404).json({ success:false, message:'No existe la invitación' });
-    if (row.estado !== 'reclamado') return res.status(400).json({ success:false, message:'La invitación no está reclamada' });
+    if (!row) return res.status(404).json({ success: false, message: 'No existe la invitación' });
+    if (row.estado !== 'reclamado') return res.status(400).json({ success: false, message: 'La invitación no está reclamada' });
 
     await pool.query('BEGIN');
     await pool.query(
@@ -1055,11 +1056,11 @@ app.post('/api/invitaciones/activar', verificarToken, async (req, res) => {
     await pool.query('UPDATE invitaciones SET estado=$1, activado_en=now() WHERE id=$2', ['activado', row.id]);
     await pool.query('COMMIT');
 
-    res.json({ success:true, message:'Meses activados para emisor y receptor.' });
+    res.json({ success: true, message: 'Meses activados para emisor y receptor.' });
   } catch (e) {
-    await pool.query('ROLLBACK').catch(()=>{});
+    await pool.query('ROLLBACK').catch(() => { });
     console.error('activar invitación', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    res.status(500).json({ success: false, message: 'server_error' });
   }
 });
 
@@ -1067,13 +1068,13 @@ app.post('/api/invitaciones/activar', verificarToken, async (req, res) => {
 // GET /api/invitaciones/listar?estado=reclamado
 app.get('/api/invitaciones/listar', verificarToken, async (req, res) => {
   try {
-    if (req.usuario.username !== 'MVI') return res.status(403).json({ success:false, message:'Solo admin' });
+    if (req.usuario.username !== 'MVI') return res.status(403).json({ success: false, message: 'Solo admin' });
     const estado = req.query.estado || 'reclamado';
     const r = await pool.query('SELECT * FROM invitaciones WHERE estado=$1 ORDER BY reclamado_en DESC NULLS LAST, creado_en DESC', [estado]);
-    res.json({ success:true, data:r.rows });
+    res.json({ success: true, data: r.rows });
   } catch (e) {
     console.error('listar invitaciones', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    res.status(500).json({ success: false, message: 'server_error' });
   }
 });
 
@@ -1110,7 +1111,7 @@ app.get('/api/invitaciones/mias', verificarToken, async (req, res) => {
     res.json({ success: true, restantes, emitidas, items });
   } catch (e) {
     console.error('GET /api/invitaciones/mias', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    res.status(500).json({ success: false, message: 'server_error' });
   }
 });
 
@@ -1126,7 +1127,7 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
     );
     const emitidasIni = r0.rows[0]?.invitaciones_emitidas || 0;
     if (emitidasIni >= 6) {
-      return res.status(400).json({ success:false, message:'Máximo 6 invitaciones.' });
+      return res.status(400).json({ success: false, message: 'Máximo 6 invitaciones.' });
     }
 
     let codigo; let intentos = 0;
@@ -1156,7 +1157,7 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
         await client.query('ROLLBACK');
         if (e && e.code === '23505' && intentos < 5) continue;
         console.error('generar invitación (código):', e);
-        return res.status(500).json({ success:false, message:'server_error' });
+        return res.status(500).json({ success: false, message: 'server_error' });
       }
     }
 
@@ -1171,10 +1172,10 @@ app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
     const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
     const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
 
-    res.json({ success:true, codigo, link, restantes, emitidas });
+    res.json({ success: true, codigo, link, restantes, emitidas });
   } catch (e) {
     console.error('generar invitación', e);
-    return res.status(500).json({ success:false, message:'server_error' });
+    return res.status(500).json({ success: false, message: 'server_error' });
   } finally {
     client.release();
   }
@@ -1186,16 +1187,16 @@ app.get('/api/usuarios/:usuario/premium', verificarToken, async (req, res) => {
   try {
     const u = req.params.usuario;
     if (req.usuario.username !== u && req.usuario.username !== 'MVI') {
-      return res.status(403).json({ success:false, message:'Solo tu propio perfil' });
+      return res.status(403).json({ success: false, message: 'Solo tu propio perfil' });
     }
     const r = await pool.query(
       'SELECT premium_months_active, premium_months_pending FROM usuarios WHERE usuario=$1',
       [u]
     );
-    res.json({ success:true, ...r.rows[0] });
+    res.json({ success: true, ...r.rows[0] });
   } catch (e) {
     console.error('perfil premium', e);
-    res.status(500).json({ success:false, message:'server_error' });
+    res.status(500).json({ success: false, message: 'server_error' });
   }
 });
 
@@ -1557,10 +1558,10 @@ communityRouter.get('/posts', async (req, res) => {
   try {
     const me = req._authedUser;
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
-    const limit  = Math.min(Math.max(parseInt(req.query.limit  || '10', 10), 1), 50);
-    const q      = (req.query.q || '').trim();
-    const cats   = (req.query.cats || '').split(',').filter(Boolean);
-    const sort   = (req.query.sort || 'recientes');
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '10', 10), 1), 50);
+    const q = (req.query.q || '').trim();
+    const cats = (req.query.cats || '').split(',').filter(Boolean);
+    const sort = (req.query.sort || 'recientes');
 
     const where = [];
     const params = [];
@@ -1578,13 +1579,15 @@ communityRouter.get('/posts', async (req, res) => {
     const commCountSql = `(SELECT COUNT(*)::INT FROM community_comments cc WHERE cc.post_id = p.id::text) AS comentarios`;
 
     let orderSql = 'ORDER BY p.created_at DESC';
-    if (sort === 'likes')       orderSql = 'ORDER BY likes DESC, p.created_at DESC';
+    if (sort === 'likes') orderSql = 'ORDER BY likes DESC, p.created_at DESC';
     if (sort === 'comentarios') orderSql = 'ORDER BY comentarios DESC, p.created_at DESC';
 
     const listSql = `
       SELECT
         p.id,
         COALESCE(p.autor, u.usuario) AS autor,
+        u.picture,
+        u.public_google_avatar,
         p.categoria, p.titulo, p.contenido, p.tipo, p.created_at,
         ${likeCountSql}, ${commCountSql}, ${likedByMe}
       FROM community_posts p
@@ -1593,6 +1596,7 @@ communityRouter.get('/posts', async (req, res) => {
       ${orderSql}
       OFFSET $${me ? i + 1 : i} LIMIT $${me ? i + 2 : i + 1};
     `;
+
 
     const listParams = [...params];
     if (me) listParams.push(me.id);
@@ -1606,28 +1610,29 @@ communityRouter.get('/posts', async (req, res) => {
     ]);
 
     // ...después de ejecutar listSql y countSql:
-const items = list.rows.map(r => {
-  const base = {
-    id: r.id,
-    autor: r.autor,
-    categoria: r.categoria,
-    titulo: r.titulo,
-    tipo: r.tipo,
-    likes: r.likes,
-    comentariosCount: r.comentarios,
-    likedByMe: !!r.liked_by_me,
-    created_at: r.created_at
-  };
+        const items = list.rows.map(r => {
+      const base = {
+        id: r.id,
+        autor: r.autor,
+        categoria: r.categoria,
+        titulo: r.titulo,
+        tipo: r.tipo,
+        likes: r.likes,
+        comentariosCount: r.comentarios,
+        likedByMe: !!r.liked_by_me,
+        created_at: r.created_at,
+        avatar_url: (r.public_google_avatar && r.picture) ? r.picture : null
+      };
 
-  if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
-    return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
-  }
+      if (r.tipo === 'encuesta' || Array.isArray(r.contenido)) {
+        return { ...base, opciones: Array.isArray(r.contenido) ? r.contenido : [], votos: [] };
+      }
 
-  const c = r.contenido || {};
-  return { ...base, contenido: c.text || '', video: c.video || null };
-});
+      const c = r.contenido || {};
+      return { ...base, contenido: c.text || '', video: c.video || null };
+    });
 
-res.json({ items, total: count.rows[0].total });
+    res.json({ items, total: count.rows[0].total });
 
   } catch (e) {
     console.error('GET /api/community/posts', e);
@@ -1641,7 +1646,10 @@ communityRouter.get('/posts/:id', async (req, res) => {
   const me = req._authedUser;
   try {
     const r = await pool.query(
-      `SELECT p.id, p.user_id, COALESCE(p.autor, u.usuario) AS autor,
+      `SELECT p.id, p.user_id,
+              COALESCE(p.autor, u.usuario) AS autor,
+              u.picture,
+              u.public_google_avatar,
               p.categoria, p.titulo, p.contenido, p.tipo, p.created_at
          FROM community_posts p
          LEFT JOIN usuarios u ON u.id = p.user_id
@@ -1684,8 +1692,12 @@ communityRouter.get('/posts/:id', async (req, res) => {
       video: p.contenido?.video || null,
       tipo: 'post',
       created_at: p.created_at,
-      likes, comentariosCount, likedByMe
+      likes,
+      comentariosCount,
+      likedByMe,
+      avatar_url: (p.public_google_avatar && p.picture) ? p.picture : null
     });
+
 
   } catch (e) {
     console.error('GET /api/community/posts/:id', e);
@@ -1694,17 +1706,30 @@ communityRouter.get('/posts/:id', async (req, res) => {
 });
 
 // GET /posts/:id/comments
+// GET /posts/:id/comments
 communityRouter.get('/posts/:id/comments', async (req, res) => {
   const id = String(req.params.id);
   try {
     const r = await pool.query(
-      `SELECT c.id, c.contenido, c.created_at, u.usuario AS autor
+      `SELECT c.id, c.contenido, c.created_at,
+              u.usuario AS autor,
+              u.picture,
+              u.public_google_avatar
          FROM community_comments c
          JOIN usuarios u ON u.id = c.user_id
         WHERE c.post_id = $1
         ORDER BY c.created_at ASC`, [id]
     );
-    res.json(r.rows);
+
+    const comments = r.rows.map(row => ({
+      id: row.id,
+      contenido: row.contenido,
+      created_at: row.created_at,
+      autor: row.autor,
+      avatar_url: (row.public_google_avatar && row.picture) ? row.picture : null
+    }));
+
+    res.json(comments);
   } catch (e) {
     console.error('GET /api/community/posts/:id/comments', e);
     res.status(500).json({ error: 'server_error' });
@@ -2238,6 +2263,7 @@ app.delete('/api/my/opiniones/:id', async (req, res) => {
 });
 
 // PERFIL: solo el propio usuario
+// PERFIL: solo el propio usuario
 app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   const usuario = req.params.usuario;
   try {
@@ -2246,7 +2272,7 @@ app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
     }
 
     const u = await pool.query(
-      'SELECT usuario, email, descripcion, cartera_publica FROM usuarios WHERE usuario = $1',
+      'SELECT usuario, email, descripcion, cartera_publica, picture, public_google_avatar FROM usuarios WHERE usuario = $1',
       [usuario]
     );
     if (!u.rows.length) return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
@@ -2263,9 +2289,9 @@ app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   }
 });
 
-// === Actualizar datos básicos del perfil (usuario, descripción, email)
+// === Actualizar datos básicos del perfil (usuario, descripción, email, avatar público)
 app.post('/api/actualizar-perfil', verificarToken, async (req, res) => {
-  const { original, nuevoUsuario, nuevaDescripcion, nuevoEmail } = req.body || {};
+  const { original, nuevoUsuario, nuevaDescripcion, nuevoEmail, publicGoogleAvatar } = req.body || {};
 
   if (!original || !nuevoUsuario) {
     return res.status(400).json({ success: false, message: 'Faltan datos obligatorios.' });
@@ -2280,6 +2306,12 @@ app.post('/api/actualizar-perfil', verificarToken, async (req, res) => {
   const newUser = nuevoUsuario.trim();
   const newDesc = (nuevaDescripcion || '').trim();
   const newMail = (nuevoEmail || '').trim() || null;
+
+  // Normalizamos la preferencia: si no viene, no tocamos la columna
+  let publicAvatarValue = null;
+  if (typeof publicGoogleAvatar === 'boolean') {
+    publicAvatarValue = publicGoogleAvatar;
+  }
 
   const client = await pool.connect();
   try {
@@ -2307,10 +2339,17 @@ app.post('/api/actualizar-perfil', verificarToken, async (req, res) => {
       }
     }
 
-    // Actualizar tabla principal de usuarios
+    // Actualizar tabla principal de usuarios (incluyendo public_google_avatar si viene)
     await client.query(
-      'UPDATE usuarios SET usuario = $1, email = $2, descripcion = $3 WHERE usuario = $4',
-      [newUser, newMail, newDesc || null, original]
+      `
+      UPDATE usuarios
+         SET usuario = $1,
+             email   = $2,
+             descripcion = $3,
+             public_google_avatar = COALESCE($4, public_google_avatar)
+       WHERE usuario = $5
+      `,
+      [newUser, newMail, newDesc || null, publicAvatarValue, original]
     );
 
     // Si realmente ha cambiado el nombre, propagamos a las tablas que usan "usuario" como texto
@@ -2348,10 +2387,11 @@ app.get('/api/perfil/:usuario/export', verificarToken, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Acceso denegado.' });
     }
 
-    const u = await pool.query(
-      'SELECT id, usuario, email, descripcion, tipo, cartera_publica, premium_months_active, premium_months_pending FROM usuarios WHERE usuario = $1',
+const u = await pool.query(
+      'SELECT id, usuario, email, descripcion, tipo, cartera_publica, premium_months_active, premium_months_pending, picture, public_google_avatar FROM usuarios WHERE usuario = $1',
       [usuario]
     );
+
     if (!u.rows.length) {
       return res.status(404).json({ success: false, message: 'Usuario no encontrado.' });
     }
