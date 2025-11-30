@@ -748,12 +748,19 @@ app.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ success: false, message: 'Usuario o contraseña incorrectos.' });
 
-    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' }); res.json({
+    const token = jwt.sign(
+      { id: user.id, username: user.usuario, tipo: user.tipo },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
       success: true,
       message: 'Inicio de sesión correcto.',
       token,
       user: { id: user.id, usuario: user.usuario, email: user.email, tipo: user.tipo }
     });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Error al iniciar sesión.' });
@@ -831,7 +838,11 @@ app.post('/auth/google/idtoken', async (req, res) => {
     }
 
     // 3) emitir tu JWT (mismo formato que en /login)
-    const token = jwt.sign({ id: user.id, username: user.usuario, tipo: user.tipo }, JWT_SECRET, { expiresIn: '2h' });
+    const token = jwt.sign(
+      { id: user.id, username: user.usuario, tipo: user.tipo },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
 
     // 4) comprobar si ya hay consentimiento registrado
     const cons = await pool.query(`
@@ -920,8 +931,9 @@ app.post('/auth/firebase/idtoken', async (req, res) => {
     const token = jwt.sign(
       { id: user.id, username: user.usuario, tipo: user.tipo },
       JWT_SECRET,
-      { expiresIn: '2h' }
+      { expiresIn: '30d' }
     );
+
 
     return res.json({
       success: true,
@@ -1610,7 +1622,7 @@ communityRouter.get('/posts', async (req, res) => {
     ]);
 
     // ...después de ejecutar listSql y countSql:
-        const items = list.rows.map(r => {
+    const items = list.rows.map(r => {
       const base = {
         id: r.id,
         autor: r.autor,
@@ -2263,7 +2275,6 @@ app.delete('/api/my/opiniones/:id', async (req, res) => {
 });
 
 // PERFIL: solo el propio usuario
-// PERFIL: solo el propio usuario
 app.get('/api/perfil/:usuario', verificarToken, async (req, res) => {
   const usuario = req.params.usuario;
   try {
@@ -2387,7 +2398,7 @@ app.get('/api/perfil/:usuario/export', verificarToken, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Acceso denegado.' });
     }
 
-const u = await pool.query(
+    const u = await pool.query(
       'SELECT id, usuario, email, descripcion, tipo, cartera_publica, premium_months_active, premium_months_pending, picture, public_google_avatar FROM usuarios WHERE usuario = $1',
       [usuario]
     );
