@@ -1326,6 +1326,8 @@ app.get('/api/public/usercount', async (req, res) => {
 
 // Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
 // Protege la lista de usuarios e inversiones solo para MVI
+// Alias que te faltaba: /api/admin/data -> igual que /api/admin/datos
+// Protege la lista de usuarios e inversiones solo para MVI
 app.get('/api/admin/data', verificarToken, (req, res, next) => {
   if (req.usuario.username !== 'MVI') {
     return res.status(403).json({ success: false, message: 'Acceso denegado.' });
@@ -1333,10 +1335,16 @@ app.get('/api/admin/data', verificarToken, (req, res, next) => {
   next();
 }, async (req, res) => {
   try {
-    const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
-    const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
+    // Añadimos id y tipo, y ordenamos por id DESC (más recientes primero)
+    const usuarios = await pool.query(
+      'SELECT id, usuario, email, tipo FROM usuarios ORDER BY id DESC'
+    );
+    const inversiones = await pool.query(
+      'SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC'
+    );
     res.json({ success: true, usuarios: usuarios.rows, inversiones: inversiones.rows });
   } catch (e) {
+    console.error('Error /api/admin/data:', e);
     res.status(500).json({ success: false, message: 'Error al obtener datos.' });
   }
 });
@@ -1346,10 +1354,15 @@ app.get('/api/admin/datos', async (req, res) => {
   const admin = req.query.admin;
   if (admin !== 'MVI') return res.status(403).json({ success: false, message: 'Acceso denegado.' });
   try {
-    const usuarios = await pool.query('SELECT usuario, email FROM usuarios');
-    const inversiones = await pool.query('SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC');
+    const usuarios = await pool.query(
+      'SELECT id, usuario, email, tipo FROM usuarios ORDER BY id DESC'
+    );
+    const inversiones = await pool.query(
+      'SELECT usuario, propiedad, cantidad, divisa, fecha FROM inversiones ORDER BY fecha DESC'
+    );
     res.json({ success: true, usuarios: usuarios.rows, inversiones: inversiones.rows });
   } catch (e) {
+    console.error('Error /api/admin/datos:', e);
     res.status(500).json({ success: false, message: 'Error al obtener datos.' });
   }
 });
