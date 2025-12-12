@@ -20,11 +20,23 @@ try { require('dotenv').config(); } catch (e) {
   console.warn('dotenv no disponible; usando variables del entorno');
 }
 
-// Google Auth para la web
+// Google Auth
 const { OAuth2Client } = require('google-auth-library');
 const oauthClient = new OAuth2Client();
-const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
-  || '329044944531-opeo9m7r3q4e1uf22lhll0atftfv0qp9.apps.googleusercontent.com';
+
+// ✅ Client IDs permitidos (Web + iOS)
+const GOOGLE_WEB_CLIENT_ID =
+  process.env.GOOGLE_WEB_CLIENT_ID ||
+  '329044944531-opeo9m7r3q4e1uf22lhll0atftfv0qp9.apps.googleusercontent.com';
+
+const GOOGLE_IOS_CLIENT_ID =
+  process.env.GOOGLE_IOS_CLIENT_ID ||
+  '329044944531-opeo9m7r3q4e1uf22lhll0atftfv0qp9.apps.googleusercontent.com'; // <-- pon aquí el iOS si es distinto
+
+const GOOGLE_ALLOWED_CLIENT_IDS = [
+  GOOGLE_WEB_CLIENT_ID,
+  GOOGLE_IOS_CLIENT_ID
+].filter(Boolean);
 
 // Usa siempre la clave fuerte de JWT desde el entorno
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -774,8 +786,9 @@ app.post('/auth/google/idtoken', async (req, res) => {
     // 1) Verificar ID Token con Google
     const ticket = await oauthClient.verifyIdToken({
       idToken: credential,
-      audience: GOOGLE_WEB_CLIENT_ID
+      audience: GOOGLE_ALLOWED_CLIENT_IDS // ✅ acepta web + ios
     });
+
     const payload = ticket.getPayload(); // sub, email, email_verified, name, picture...
     const googleId = payload.sub;
     const email = String(payload.email || '').toLowerCase();
@@ -2608,5 +2621,3 @@ app.post('/api/push/ingest', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Servidor iniciado en http://localhost:${PORT}`);
 });
-
-
