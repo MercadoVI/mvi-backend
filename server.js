@@ -26,7 +26,7 @@ const oauthClient = new OAuth2Client();
 
 // ✅ Client IDs permitidos (Web + iOS)
 const GOOGLE_WEB_CLIENT_ID =
-  process.env.GOOGLE_WEB_CLIENT_ID ||
+  process.env.GOOGLE_CLIENT_ID ||
   '329044944531-opeo9m7r3q4e1uf22lhll0atftfv0qp9.apps.googleusercontent.com';
 
 const GOOGLE_IOS_CLIENT_ID =
