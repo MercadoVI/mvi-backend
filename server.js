@@ -750,6 +750,21 @@ async function sendPushToUsers(userIds, { title, body, data = {} }) {
     };
 
     const resp = await admin.messaging().sendEachForMulticast(message);
+    // DEBUG: resumen de envío
+    console.log(`[PUSH] tokens_chunk=${chunk.length} success=${resp.successCount} failure=${resp.failureCount}`);
+
+    // DEBUG: primeros errores (máximo 5) para no spamear logs
+    const firstErrors = [];
+    resp.responses.forEach((r, idx) => {
+      if (!r.success && firstErrors.length < 5) {
+        firstErrors.push({
+          token_tail: chunk[idx].slice(-10),           // solo últimos 10 chars (seguro)
+          code: r.error?.code || 'unknown',
+          msg: r.error?.message || ''
+        });
+      }
+    });
+    if (firstErrors.length) console.log('[PUSH] sample_errors:', firstErrors);
 
     resp.responses.forEach((r, idx) => {
       if (r.success) sentOk++;
@@ -2067,14 +2082,14 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
       // Notifica al dueño del post (si no soy yo)
       const targetUserId = p.rows[0].user_id || null;
       if (targetUserId && targetUserId !== me.id) {
-await notifyUsers(client, [targetUserId], {
-  title: 'Nuevo “me gusta”',
-  body: `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`,
-  data: {
-    type: 'like',
-    postId: String(id)
-  }
-});
+        await notifyUsers(client, [targetUserId], {
+          title: 'Nuevo “me gusta”',
+          body: `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`,
+          data: {
+            type: 'like',
+            postId: String(id)
+          }
+        });
 
       }
     }
@@ -2162,14 +2177,14 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
 
     const targetUserId = p.rows?.[0]?.user_id || null;
     if (targetUserId && targetUserId !== me.id) {
-await notifyUsers(client, [targetUserId], {
-  title: 'Nuevo comentario',
-  body: `${me.usuario} ha comentado en: ${p.rows[0].titulo}`,
-  data: {
-    type: 'comment',
-    postId: String(id)
-  }
-});
+      await notifyUsers(client, [targetUserId], {
+        title: 'Nuevo comentario',
+        body: `${me.usuario} ha comentado en: ${p.rows[0].titulo}`,
+        data: {
+          type: 'comment',
+          postId: String(id)
+        }
+      });
 
     }
 
