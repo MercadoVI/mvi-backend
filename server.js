@@ -1,5 +1,8 @@
 // server.js — Render/Node + PostgreSQL para MVI (Comunidad + Admin)
-
+// Cargar .env en desarrollo; en producción (Render) ya usa process.env
+try { require('dotenv').config(); } catch (e) {
+  console.warn('dotenv no disponible; usando variables del entorno');
+}
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -8,6 +11,28 @@ const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const propiedades = require('./propiedades.json');
 
+// =========================
+// Firebase Admin (FCM) — con JSON en ENV (Render)
+// =========================
+const admin = require('firebase-admin');
+
+try {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+  if (!raw) {
+    console.warn('⚠️ Falta FIREBASE_SERVICE_ACCOUNT_JSON. Push desactivado (pero DB seguirá).');
+  } else {
+    const serviceAccount = JSON.parse(raw);
+    if (!admin.apps.length) {
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+      console.log('✅ Firebase Admin inicializado (FCM listo).');
+    }
+  }
+} catch (e) {
+  console.error('❌ Error inicializando Firebase Admin. Revisa FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
+}
+
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -15,10 +40,7 @@ const PORT = process.env.PORT || 3000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ensureUuid = (v) => UUID_RE.test(String(v));
 
-// Cargar .env en desarrollo; en producción (Render) ya usa process.env
-try { require('dotenv').config(); } catch (e) {
-  console.warn('dotenv no disponible; usando variables del entorno');
-}
+
 
 // Google Auth
 const { OAuth2Client } = require('google-auth-library');
@@ -661,6 +683,139 @@ function verificarToken(req, res, next) {
     next();
   });
 }
+// server.js
+function optionalAuth(req, _res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return next();
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (!err && decoded) req.usuario = decoded;
+    next();
+  });
+}
+
+// server.js
+// =========================
+// Helpers NOTIFY (DB + Push)
+// =========================
+
+// Errores típicos que indican token muerto -> hay que borrarlo
+function isDeadTokenError(code = '') {
+  return [
+    'messaging/registration-token-not-registered',
+    'messaging/invalid-registration-token',
+    'messaging/invalid-argument'
+  ].includes(code);
+}
+
+// Envía push a TODOS los tokens de los userIds (en lotes)
+async function sendPushToUsers(userIds, { title, body, data = {} }) {
+  if (!admin.apps?.length) {
+    // Si no hay credenciales, no rompemos el flujo: guardamos en BD igualmente
+    console.warn('⚠️ Push saltado: Firebase Admin no inicializado.');
+    return { sent: 0, tokens: 0 };
+  }
+
+  if (!Array.isArray(userIds) || !userIds.length) return { sent: 0, tokens: 0 };
+
+  // 1) Obtener tokens
+  const t = await pool.query(
+    `SELECT user_id, token
+       FROM user_push_tokens
+      WHERE user_id = ANY($1::int[])`,
+    [userIds]
+  );
+
+  const tokens = t.rows.map(r => r.token).filter(Boolean);
+  if (!tokens.length) return { sent: 0, tokens: 0 };
+
+  // 2) Enviar en chunks de 500 (límite típico de multicast)
+  const chunkSize = 500;
+  let sentOk = 0;
+  const deadTokens = [];
+
+  for (let i = 0; i < tokens.length; i += chunkSize) {
+    const chunk = tokens.slice(i, i + chunkSize);
+
+    const message = {
+      tokens: chunk,
+      notification: {
+        title: String(title || 'Notificación'),
+        body: String(body || '')
+      },
+      data: Object.fromEntries(
+        Object.entries(data || {}).map(([k, v]) => [String(k), String(v)])
+      )
+    };
+
+    const resp = await admin.messaging().sendEachForMulticast(message);
+
+    resp.responses.forEach((r, idx) => {
+      if (r.success) sentOk++;
+      else {
+        const code = r.error?.code || '';
+        if (isDeadTokenError(code)) deadTokens.push(chunk[idx]);
+      }
+    });
+  }
+
+  // 3) Limpiar tokens muertos
+  if (deadTokens.length) {
+    await pool.query(
+      `DELETE FROM user_push_tokens WHERE token = ANY($1::text[])`,
+      [deadTokens]
+    );
+    console.log(`🧹 Tokens inválidos borrados: ${deadTokens.length}`);
+  }
+
+  return { sent: sentOk, tokens: tokens.length };
+}
+
+/**
+ * Crea notificación interna + push real.
+ * - userIds: array de ids de usuarios
+ * - title/body: texto
+ * - data: payload extra para la app
+ * - broadcastKey: para idempotencia si es broadcast
+ */
+async function notifyUsers(client, userIds, { title, body, data = {}, broadcastKey = null }) {
+  if (!Array.isArray(userIds) || !userIds.length) return { ok: true, saved: 0, push: { sent: 0, tokens: 0 } };
+
+  // (Opcional) idempotencia global para broadcast
+  if (broadcastKey) {
+    const insKey = await client.query(
+      `INSERT INTO notif_broadcast (bkey)
+       VALUES ($1)
+       ON CONFLICT (bkey) DO NOTHING
+       RETURNING bkey`,
+      [broadcastKey]
+    );
+    if (!insKey.rowCount) {
+      // ya se envió/guardó anteriormente
+      return { ok: true, skipped: true, saved: 0, push: { sent: 0, tokens: 0 } };
+    }
+  }
+
+  // 1) Guardar en community_notifications (1 fila por usuario)
+  const saved = await client.query(
+    `INSERT INTO community_notifications (user_id, titulo, mensaje)
+     SELECT UNNEST($1::int[]), $2, $3`,
+    [userIds, title || 'Notificación', body || '']
+  );
+
+
+  // 2) Enviar push fuera del client (pero seguimos dentro del request)
+  //    Nota: ya hemos guardado en BD; el push no debe romper la transacción si falla.
+  let pushResult = { sent: 0, tokens: 0 };
+  try {
+    pushResult = await sendPushToUsers(userIds, { title, body, data });
+  } catch (e) {
+    console.error('❌ Error enviando push:', e);
+  }
+
+  return { ok: true, saved: saved.rowCount || 0, push: pushResult };
+}
 
 // ====== REFERRALS: helpers de codificación segura (letra→número) ======
 function encodeUsernameToNumbers(username) {
@@ -878,7 +1033,7 @@ app.post('/auth/google/idtoken', async (req, res) => {
 });
 
 // Requiere que definas FIREBASE_API_KEY en Render (la misma del cliente)
-const FIREBASE_API_KEY = 'AIzaSyDLyTsx_lg6eU65nkL1faPH_axE_mG6NLo';
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 
 app.post('/auth/firebase/idtoken', async (req, res) => {
   try {
@@ -1557,6 +1712,7 @@ app.get('/api/propiedades/:id', (req, res) => {
 //  (API) — robusto: ids como texto
 // ===========================
 const communityRouter = express.Router();
+communityRouter.use(optionalAuth);
 
 // Resolver usuario: JWT o cabecera X-Username
 communityRouter.use(async (req, res, next) => {
@@ -1911,11 +2067,15 @@ communityRouter.post('/posts/:id/like', async (req, res) => {
       // Notifica al dueño del post (si no soy yo)
       const targetUserId = p.rows[0].user_id || null;
       if (targetUserId && targetUserId !== me.id) {
-        await client.query(
-          `INSERT INTO community_notifications (user_id, titulo, mensaje)
-           VALUES ($1, $2, $3)`,
-          [targetUserId, 'Nuevo “me gusta”', `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`]
-        );
+await notifyUsers(client, [targetUserId], {
+  title: 'Nuevo “me gusta”',
+  body: `${me.usuario} ha indicado "me gusta" en: ${p.rows[0].titulo}`,
+  data: {
+    type: 'like',
+    postId: String(id)
+  }
+});
+
       }
     }
 
@@ -2002,11 +2162,15 @@ communityRouter.post('/posts/:id/comments', async (req, res) => {
 
     const targetUserId = p.rows?.[0]?.user_id || null;
     if (targetUserId && targetUserId !== me.id) {
-      await client.query(
-        `INSERT INTO community_notifications (user_id, titulo, mensaje)
-         VALUES ($1,$2,$3)`,
-        [targetUserId, 'Nuevo comentario', `${me.usuario} ha comentado en: ${p.rows[0].titulo}`]
-      );
+await notifyUsers(client, [targetUserId], {
+  title: 'Nuevo comentario',
+  body: `${me.usuario} ha comentado en: ${p.rows[0].titulo}`,
+  data: {
+    type: 'comment',
+    postId: String(id)
+  }
+});
+
     }
 
     await client.query('COMMIT');
@@ -2498,7 +2662,7 @@ app.put('/api/perfil/cartera-privacidad', async (req, res) => {
 });
 
 // Guarda el token FCM que devuelve Firebase en el cliente
-app.post('/api/push/register', async (req, res) => {
+app.post('/api/push/register', optionalAuth, async (req, res) => {
   try {
     // Acepta: JWT estándar (Authorization: Bearer ...) o cabecera X-Username (como ya haces en comunidad)
     let userRow = null;
@@ -2531,7 +2695,7 @@ app.post('/api/push/register', async (req, res) => {
 });
 
 // Opcional: desregistrar token (cuando el usuario cierra sesión o el SW lo invalida)
-app.post('/api/push/unregister', async (req, res) => {
+app.post('/api/push/unregister', optionalAuth, async (req, res) => {
   try {
     const headerUser = req.header('X-Username');
     const { token } = req.body || {};
@@ -2549,7 +2713,8 @@ app.post('/api/push/unregister', async (req, res) => {
 });
 // Guarda en tu feed interno la notificación mostrada al usuario (ack desde el SW/cliente)
 // Si incluye broadcastKey, la difunde a TODOS los usuarios con idempotencia.
-app.post('/api/push/ingest', async (req, res) => {
+// server.js
+app.post('/api/push/ingest', optionalAuth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -2566,46 +2731,43 @@ app.post('/api/push/ingest', async (req, res) => {
       }
     }
 
-    const { title, body, broadcastKey } = req.body || {};
+    const { title, body, broadcastKey, data } = req.body || {};
     if (!title && !body) {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: 'missing_payload' });
     }
 
+    // Si broadcast -> todos los usuarios
     if (broadcastKey) {
-      // Idempotencia: solo insertamos 1 vez por clave
-      const insKey = await client.query(
-        `INSERT INTO notif_broadcast (bkey) VALUES ($1)
-         ON CONFLICT (bkey) DO NOTHING
-         RETURNING bkey`,
-        [broadcastKey]
-      );
+      const all = await client.query(`SELECT id FROM usuarios`);
+      const allIds = all.rows.map(r => r.id);
 
-      if (insKey.rowCount > 0) {
-        // Primera vez que vemos esta clave -> difundir a todos
-        await client.query(
-          `INSERT INTO community_notifications (user_id, titulo, mensaje)
-           SELECT id, $1, $2 FROM usuarios`,
-          [title || 'Notificación', body || '']
-        );
-      }
+      const result = await notifyUsers(client, allIds, {
+        title: title || 'Notificación',
+        body: body || '',
+        data: { ...(data || {}), type: 'broadcast' },
+        broadcastKey
+      });
+
       await client.query('COMMIT');
-      return res.json({ success: true, broadcast: true });
+      return res.json({ success: true, broadcast: true, ...result });
     }
 
-    // Modo normal: guardar solo para el usuario que lo recibió
+    // Normal -> 1 usuario
     if (!userId) {
       await client.query('ROLLBACK');
       return res.status(401).json({ success: false, message: 'auth_required' });
     }
 
-    await client.query(
-      `INSERT INTO community_notifications (user_id, titulo, mensaje) VALUES ($1,$2,$3)`,
-      [userId, title || 'Notificación', body || '']
-    );
+    const result = await notifyUsers(client, [userId], {
+      title: title || 'Notificación',
+      body: body || '',
+      data: { ...(data || {}), type: 'direct' }
+    });
 
     await client.query('COMMIT');
-    res.json({ success: true, broadcast: false });
+    return res.json({ success: true, broadcast: false, ...result });
+
   } catch (e) {
     await client.query('ROLLBACK');
     console.error('POST /api/push/ingest', e);
