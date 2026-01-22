@@ -108,7 +108,7 @@ app.use(express.static(__dirname, {
     res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate');
   }
 }));
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // ⬅️ para capturas grandes (Urbanitae)
 
 // =========================
 // Migraciones / Bootstrap
@@ -631,7 +631,24 @@ CREATE TABLE IF NOT EXISTS notif_broadcast (
 );
 
 
+
 `);
+    // =========================
+    // Urbanitae Captures (borradores)
+    // =========================
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS urbanitae_captures (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_code TEXT,
+        source_url TEXT NOT NULL,
+        title TEXT,
+        next_data JSONB,
+        economic_html TEXT,
+        text_content TEXT,
+        captured_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
 
     console.log('✅ Tablas/migraciones OK.');
   } catch (err) {
@@ -671,6 +688,85 @@ function verificarAdminMVI(req, res, next) {
   const usuario = req.usuario;
   if (usuario && usuario.username === 'MVI') return next();
   return res.status(403).json({ error: 'Acceso denegado. Solo para el administrador.' });
+}
+// =========================
+// API Capturas Urbanitae
+// =========================
+
+// Guardar captura (desde bookmarklet o admin)
+app.post('/api/capturas/urbanitae', allowCaptureKeyOrAdmin, async (req, res) => {
+  try {
+    const { url, title, nextData, economicEl, text } = req.body || {};
+    if (!url) return res.status(400).json({ success: false, message: 'Falta url' });
+
+    // Extrae P000442 de la URL si existe
+    const match = String(url).match(/P\d{6}/i);
+    const projectCode = match ? match[0].toUpperCase() : null;
+
+    // nextData puede venir como string JSON (del script __NEXT_DATA__)
+    const parsedNext = typeof nextData === 'string' ? safeJsonParse(nextData) : nextData;
+
+    await pool.query(
+      `INSERT INTO urbanitae_captures
+        (project_code, source_url, title, next_data, economic_html, text_content, captured_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        projectCode,
+        url,
+        title || null,
+        parsedNext || null,
+        economicEl || null,
+        text || null,
+        // Si entra por CAPTURE_KEY no hay req.usuario; si entra por JWT sí.
+        req.usuario?.username || 'capture-key'
+      ]
+    );
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('POST /api/capturas/urbanitae', e);
+    return res.status(500).json({ success: false, message: 'Error' });
+  }
+});
+
+// Listar capturas (solo admin por JWT o CAPTURE_KEY)
+app.get('/api/capturas/urbanitae', allowCaptureKeyOrAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
+
+    const { rows } = await pool.query(
+      `SELECT id, project_code, source_url, title, captured_by, created_at
+       FROM urbanitae_captures
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    return res.json({ success: true, items: rows });
+  } catch (e) {
+    console.error('GET /api/capturas/urbanitae', e);
+    return res.status(500).json({ success: false, message: 'Error' });
+  }
+});
+
+// Permite acceder si:
+// - viene CAPTURE_KEY correcta en header 'x-capture-key', o
+// - viene JWT válido y además es admin MVI
+function allowCaptureKeyOrAdmin(req, res, next) {
+  const key = req.headers['x-capture-key'];
+
+  // 1) Vía clave secreta
+  if (process.env.CAPTURE_KEY && key === process.env.CAPTURE_KEY) {
+    return next();
+  }
+
+  // 2) Vía JWT + Admin
+  return verificarToken(req, res, () => verificarAdminMVI(req, res, next));
+}
+
+// Helper: parseo seguro JSON
+function safeJsonParse(str) {
+  try { return JSON.parse(str); } catch { return null; }
 }
 
 function verificarToken(req, res, next) {
@@ -750,6 +846,7 @@ async function sendPushToUsers(userIds, { title, body, data = {} }) {
     };
 
     const resp = await admin.messaging().sendEachForMulticast(message);
+    
     // DEBUG: resumen de envío
     console.log(`[PUSH] tokens_chunk=${chunk.length} success=${resp.successCount} failure=${resp.failureCount}`);
 
