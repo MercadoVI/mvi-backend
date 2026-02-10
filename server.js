@@ -2746,7 +2746,13 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
       }
     }
 
-    const { title, body, broadcastKey, data } = req.body || {};
+    const { title, body, broadcastKey, data, deepLink } = req.body || {};
+
+    // ✅ Construimos data final (acepta deepLink en raíz o dentro de data)
+    const finalData = {
+      ...(data || {}),
+      ...(deepLink ? { deepLink: String(deepLink) } : {})
+    };
     if (!title && !body) {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: 'missing_payload' });
@@ -2760,7 +2766,7 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
       const result = await notifyUsers(client, allIds, {
         title: title || 'Notificación',
         body: body || '',
-        data: { ...(data || {}), type: 'broadcast' },
+data: { ...finalData, type: 'broadcast' },
         broadcastKey
       });
 
@@ -2777,7 +2783,7 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
     const result = await notifyUsers(client, [userId], {
       title: title || 'Notificación',
       body: body || '',
-      data: { ...(data || {}), type: 'direct' }
+data: { ...finalData, type: 'direct' }
     });
 
     await client.query('COMMIT');
