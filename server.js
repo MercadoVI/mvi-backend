@@ -2745,14 +2745,20 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
         userId = r.rows[0]?.id || null;
       }
     }
+const { title, body, broadcastKey, data, deepLink } = req.body || {};
 
-    const { title, body, broadcastKey, data, deepLink } = req.body || {};
+// ✅ Normalizamos el deeplink:
+// - si viene deepLink (raíz) -> lo usamos
+// - si NO viene deepLink pero viene data.url -> lo copiamos a deepLink
+const urlFromData = data?.url ? String(data.url) : null;
+const normalizedDeepLink = deepLink ? String(deepLink) : (urlFromData || null);
 
-    // ✅ Construimos data final (acepta deepLink en raíz o dentro de data)
-    const finalData = {
-      ...(data || {}),
-      ...(deepLink ? { deepLink: String(deepLink) } : {})
-    };
+// ✅ Construimos data final (enviamos SIEMPRE deepLink si tenemos algo)
+const finalData = {
+  ...(data || {}),
+  ...(normalizedDeepLink ? { deepLink: normalizedDeepLink } : {})
+};
+
     if (!title && !body) {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: 'missing_payload' });
