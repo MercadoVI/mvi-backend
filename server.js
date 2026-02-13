@@ -2766,9 +2766,10 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
       const result = await notifyUsers(client, allIds, {
         title: title || 'Notificación',
         body: body || '',
-data: { ...finalData, type: 'broadcast' },
+        data: { ...finalData, type: 'broadcast' },   // ✅ AQUÍ
         broadcastKey
       });
+
 
       await client.query('COMMIT');
       return res.json({ success: true, broadcast: true, ...result });
@@ -2783,8 +2784,9 @@ data: { ...finalData, type: 'broadcast' },
     const result = await notifyUsers(client, [userId], {
       title: title || 'Notificación',
       body: body || '',
-data: { ...finalData, type: 'direct' }
+      data: { ...finalData, type: 'direct' }       // ✅ AQUÍ
     });
+
 
     await client.query('COMMIT');
     return res.json({ success: true, broadcast: false, ...result });
