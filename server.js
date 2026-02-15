@@ -608,6 +608,14 @@ BEGIN
   ) THEN
     ALTER TABLE community_notifications ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
   END IF;
+
+  -- deep_link (deeplink interno opcional)
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='community_notifications' AND column_name='deep_link'
+  ) THEN
+    ALTER TABLE community_notifications ADD COLUMN deep_link TEXT;
+  END IF;
 END$$;
 
 -- Índice útil
@@ -794,7 +802,7 @@ async function sendPushToUsers(userIds, { title, body, data = {} }) {
  * - data: payload extra para la app
  * - broadcastKey: para idempotencia si es broadcast
  */
-async function notifyUsers(client, userIds, { title, body, data = {}, broadcastKey = null }) {
+async function notifyUsers(client, userIds, { title, body, data = {}, broadcastKey = null, deepLink = null }) {
   if (!Array.isArray(userIds) || !userIds.length) return { ok: true, saved: 0, push: { sent: 0, tokens: 0 } };
 
   // (Opcional) idempotencia global para broadcast
@@ -814,9 +822,9 @@ async function notifyUsers(client, userIds, { title, body, data = {}, broadcastK
 
   // 1) Guardar en community_notifications (1 fila por usuario)
   const saved = await client.query(
-    `INSERT INTO community_notifications (user_id, titulo, mensaje)
-     SELECT UNNEST($1::int[]), $2, $3`,
-    [userIds, title || 'Notificación', body || '']
+    `INSERT INTO community_notifications (user_id, titulo, mensaje, deep_link)
+     SELECT UNNEST($1::int[]), $2, $3, $4`,
+    [userIds, title || 'Notificación', body || '', deepLink || null]
   );
 
 
@@ -2251,7 +2259,7 @@ communityRouter.get('/notifications', async (req, res) => {
   if (!req._authedUser) return res.json([]);
   try {
     const r = await pool.query(
-      `SELECT id, titulo, mensaje, "read" AS read, created_at
+      `SELECT id, titulo, mensaje, deep_link, "read" AS read, created_at
          FROM community_notifications
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -2745,19 +2753,21 @@ app.post('/api/push/ingest', optionalAuth, async (req, res) => {
         userId = r.rows[0]?.id || null;
       }
     }
-const { title, body, broadcastKey, data, deepLink } = req.body || {};
+    const { title, body, broadcastKey, data, deepLink } = req.body || {};
 
-// ✅ Normalizamos el deeplink:
-// - si viene deepLink (raíz) -> lo usamos
-// - si NO viene deepLink pero viene data.url -> lo copiamos a deepLink
-const urlFromData = data?.url ? String(data.url) : null;
-const normalizedDeepLink = deepLink ? String(deepLink) : (urlFromData || null);
+    // ✅ Normalizamos el deeplink:
+    // - prioridad: deepLink (raíz) > data.deepLink > data.url
+    const deepLinkFromData = data?.deepLink ? String(data.deepLink) : null;
+    const urlFromData = data?.url ? String(data.url) : null;
+    const normalizedDeepLink = deepLink
+      ? String(deepLink)
+      : (deepLinkFromData || urlFromData || null);
 
-// ✅ Construimos data final (enviamos SIEMPRE deepLink si tenemos algo)
-const finalData = {
-  ...(data || {}),
-  ...(normalizedDeepLink ? { deepLink: normalizedDeepLink } : {})
-};
+    // ✅ Construimos data final (enviamos SIEMPRE deepLink si tenemos algo)
+    const finalData = {
+      ...(data || {}),
+      ...(normalizedDeepLink ? { deepLink: normalizedDeepLink } : {})
+    };
 
     if (!title && !body) {
       await client.query('ROLLBACK');
@@ -2773,7 +2783,8 @@ const finalData = {
         title: title || 'Notificación',
         body: body || '',
         data: { ...finalData, type: 'broadcast' },   // ✅ AQUÍ
-        broadcastKey
+        broadcastKey,
+        deepLink: normalizedDeepLink
       });
 
 
@@ -2790,7 +2801,8 @@ const finalData = {
     const result = await notifyUsers(client, [userId], {
       title: title || 'Notificación',
       body: body || '',
-      data: { ...finalData, type: 'direct' }       // ✅ AQUÍ
+      data: { ...finalData, type: 'direct' },       // ✅ AQUÍ
+      deepLink: normalizedDeepLink
     });
 
 
