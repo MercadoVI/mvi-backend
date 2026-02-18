@@ -6,7 +6,7 @@ try { require('dotenv').config(); } catch (e) {
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const bcrypt = require('bcrypt');
+const bcrypt = require("bcryptjs");
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const propiedades = require('./propiedades.json');
@@ -1136,66 +1136,6 @@ app.post('/auth/firebase/idtoken', async (req, res) => {
   }
 });
 
-
-// === REFERIDOS: generar código (usuario logueado) — NUEVA VERSIÓN CIFRADA ===
-app.post('/api/invitaciones/generar', verificarToken, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const emisor = req.usuario.username; // viene del JWT
-    // límite de 6 invitaciones emitidas
-    const r0 = await client.query(
-      'SELECT invitaciones_emitidas FROM invitaciones_contador WHERE usuario=$1',
-      [emisor]
-    );
-    const emitidas = r0.rows[0]?.invitaciones_emitidas || 0;
-    if (emitidas >= 6) {
-      return res.status(400).json({ success: false, message: 'Máximo 6 invitaciones.' });
-    }
-
-    // genera código con usuario codificado (letra→número) + aleatorio
-    let codigo;
-    let intentos = 0;
-    while (true) {
-      intentos++;
-      codigo = buildReferralCodeFromUser(emisor);
-      try {
-        await client.query('BEGIN');
-        await client.query(
-          'INSERT INTO invitaciones (codigo, emisor, meses_otorgables) VALUES ($1,$2,$3)',
-          [codigo, emisor, 1]
-        );
-        if (r0.rows.length) {
-          await client.query(
-            'UPDATE invitaciones_contador SET invitaciones_emitidas = invitaciones_emitidas + 1 WHERE usuario=$1',
-            [emisor]
-          );
-        } else {
-          await client.query(
-            'INSERT INTO invitaciones_contador (usuario, invitaciones_emitidas, meses_acumulados) VALUES ($1, 1, 0)',
-            [emisor]
-          );
-        }
-        await client.query('COMMIT');
-        break; // ok
-      } catch (e) {
-        await client.query('ROLLBACK');
-        // 23505 = unique_violation; reintenta con otro aleatorio
-        if (e && e.code === '23505' && intentos < 5) continue;
-        console.error('generar invitación (código):', e);
-        return res.status(500).json({ success: false, message: 'server_error' });
-      }
-    }
-
-    const linkBase = process.env.PUBLIC_APP_URL || 'https://realtyinvestor.eu';
-    const link = `${linkBase}/entrar.html?ref=${encodeURIComponent(codigo)}`;
-    res.json({ success: true, codigo, link });
-  } catch (e) {
-    console.error('generar invitación', e);
-    return res.status(500).json({ success: false, message: 'server_error' });
-  } finally {
-    client.release();
-  }
-});
 
 // === REFERIDOS: reclamar código (tras registro) ===
 // body: { receptor: "nuevoUsuario", refCode: "RI-..." }
